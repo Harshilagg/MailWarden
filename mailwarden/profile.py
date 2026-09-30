@@ -220,6 +220,38 @@ def scrub(text: str, name: str | None) -> str:
     return re.sub(r"\s{2,}", " ", text).strip(" -|,;:")
 
 
+_KEY_VALUE = re.compile(r"^\*{0,2}([A-Za-z][\w /&().-]{0,30}?)\*{0,2}\s*:\s*(.*)$")
+_META_KEYS = re.compile(
+    r"^(?:repo(?:sitory)?|github|git|link|links|url|demo|live|website|site|stack|tech(?:\s*stack)?|"
+    r"technologies|tools|built\s+with|languages?|status|date|dates|duration|role|team|license|tags?)$",
+    re.IGNORECASE,
+)
+
+
+def _first_sentence(md: str, person: str | None) -> str:
+    """First real sentence of a project file (>= 5 words), skipping metadata lines like 'Repo: ...'."""
+    in_code = False
+    for raw in md.splitlines():
+        line = raw.strip()
+        if line.startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code or not line or line.startswith(("#", "|", "![", ">")):
+            continue
+        line = re.sub(r"^[-*•+]\s+|^\d+[.)]\s+", "", line)
+        if m := _KEY_VALUE.match(line):
+            key, value = m.group(1).strip(), m.group(2).strip()
+            if _META_KEYS.match(key):
+                continue  # metadata: links, stack lists, dates
+            line = value  # e.g. "Summary: Built a ..." -> "Built a ..."
+        line = re.sub(r"[*_`]{1,3}", "", line)  # markdown emphasis/code markers
+        text = scrub(line, person)
+        if len(text.split()) >= 5:
+            sentence = re.split(r"(?<=[.!?])\s", text, maxsplit=1)[0]
+            return " ".join(sentence.split()[:25])
+    return ""
+
+
 @dataclass(frozen=True)
 class ProjectFile:
     name: str
@@ -231,10 +263,7 @@ def parse_project(md: str, filename: str, person: str | None) -> ProjectFile:
     md = clean(md)[:MAX_TEXT]
     title = next((l.lstrip("#").strip() for l in md.splitlines() if l.startswith("#")), None)
     name = scrub(title or Path(filename).stem.replace("-", " ").replace("_", " "), person)[:80] or Path(filename).stem
-    body_lines = [l.strip() for l in md.splitlines() if l.strip() and not l.startswith("#")]
-    first = next((l.lstrip("-*• ").strip() for l in body_lines if not l.startswith(("```", "|", "!["))), "")
-    sentence = re.split(r"(?<=[.!?])\s", scrub(first, person), maxsplit=1)[0]
-    one_line = " ".join(sentence.split()[:25])
+    one_line = _first_sentence(md, person)
     counts = find_skills(md)
     skills = sorted(counts, key=lambda s: (-counts[s], s))
     return ProjectFile(name=name, skills=skills, one_line=one_line)

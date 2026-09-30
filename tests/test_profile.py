@@ -172,3 +172,20 @@ def test_cli_build_dry_run_then_write(home, monkeypatch, capsys):
     assert yaml.safe_load((home / "profile.yaml").read_text())["seniority"] == "new_grad"
     assert main(["profile", "build"]) == 0
     assert "already up to date" in capsys.readouterr().out
+
+
+
+@pytest.mark.parametrize(
+    "md, expected",
+    [
+        ("# X\nRepo: https://github.com/a/x\nStack: Go, gRPC\n\nA durable job queue with retries and tracing.\n",
+         "A durable job queue with retries and tracing."),
+        ("# X\n**Repo:** https://github.com/a/x\n- **Summary:** Ledger service for payments, built with Spring Boot.\n",
+         "Ledger service for payments, built with Spring Boot."),
+        ("# X\n```\ncode block line that is long enough\n```\nReal description of the project here. Second one.\n",
+         "Real description of the project here."),
+        ("# X\nRepo: https://github.com/a/x\n", ""),
+    ],
+)
+def test_project_one_line_skips_metadata(md, expected):
+    assert prof.parse_project(md, "x.md", None).one_line == expected
