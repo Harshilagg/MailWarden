@@ -127,11 +127,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if notifier is None:
         print("notifications:   off")
     else:
-        note = ""
         if notifier.backend == "osascript":
-            note = ("  (clicks open Script Editor: run `brew install terminal-notifier` so clicks open mailwarden)")
-        target = "the mailwarden app" if getattr(notifier, "_click_target", "") == "app" else "your browser"
-        print(f"notifications:   {notifier.backend}, clicks open {target}{note}")
+            print("notifications:   osascript: clicks open Script Editor. "
+                  "Run `brew install terminal-notifier` so clicks open mailwarden.")
+        else:
+            target = "the mailwarden app" if getattr(notifier, "_click_target", "") == "app" else "your browser"
+            print(f"notifications:   {notifier.backend}, clicks open {target}")
     failures = 0
     for account in app.accounts.list(app.user_id):
         provider = app.provider_for(account)
