@@ -90,3 +90,28 @@ def test_multiple_reasons_all_reported():
 def test_empty_profile_filters_only_seniority_and_levels():
     assert not prefilter("Marketing Intern", "Mars", {}).excluded
     assert prefilter("Senior Engineer", None, {}).excluded
+
+
+NCR = {**P, "locations": ["Bengaluru", "Remote", "Delhi NCR"]}
+
+
+@pytest.mark.parametrize("location", ["Gurugram", "Gurgaon, Haryana", "Noida", "Greater Noida", "New Delhi",
+                                      "Delhi, India", "Delhi NCR", "Bangalore"])
+def test_delhi_ncr_covers_its_cities(location):
+    assert not prefilter("Backend Developer", location, NCR).excluded
+
+
+@pytest.mark.parametrize("location", ["Pune", "Hyderabad", "Chennai", "Mumbai"])
+def test_delhi_ncr_does_not_cover_other_cities(location):
+    assert prefilter("Backend Developer", location, NCR).excluded
+
+
+def test_location_entries_accept_slash_alternatives():
+    prof = {**P, "locations": ["Hyderabad / Secunderabad", "Remote"]}
+    assert not prefilter("Backend Developer", "Secunderabad", prof).excluded
+    assert prefilter("Backend Developer", "Pune", prof).excluded
+
+
+def test_location_words_match_whole_words():
+    prof = {**P, "locations": ["Delhi NCR"]}
+    assert prefilter("Backend Developer", "Ncrypted Labs, Pune", prof).excluded

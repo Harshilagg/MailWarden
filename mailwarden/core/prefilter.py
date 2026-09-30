@@ -79,6 +79,10 @@ _LOCATION_ALIASES = {
     "gurgaon": ("gurugram", "gurgaon"),
     "mumbai": ("mumbai", "bombay", "navi mumbai"),
     "delhi": ("delhi", "new delhi", "ncr", "delhi ncr"),
+    "delhi ncr": ("delhi", "new delhi", "ncr", "gurugram", "gurgaon", "noida", "greater noida"),
+    "ncr": ("delhi", "new delhi", "ncr", "gurugram", "gurgaon", "noida", "greater noida"),
+    "noida": ("noida", "greater noida"),
+    "new delhi": ("delhi", "new delhi"),
     "chennai": ("chennai", "madras"),
     "remote": ("remote", "work from home", "wfh", "anywhere"),
 }
@@ -140,12 +144,13 @@ def _location_ok(location: str, wanted: list[str], remote_ok: bool) -> bool:
         return True  # unknown / country-wide: can't tell, keep it
     if remote_ok and _REMOTE.search(loc):
         return True
-    for want in wanted:
-        variants = _LOCATION_ALIASES.get(want.strip().lower(), (want.strip().lower(),))
-        if want.strip().lower() == "remote" and not remote_ok:
-            continue
-        if any(v and v in loc for v in variants):
-            return True
+    for entry in wanted:
+        for want in (w.strip().lower() for w in str(entry).split("/")):  # "/" separates alternatives
+            if not want or (want == "remote" and not remote_ok):
+                continue
+            variants = _LOCATION_ALIASES.get(want, (want,))
+            if any(v and re.search(rf"\b{re.escape(v)}\b", loc) for v in variants):
+                return True
     return False
 
 
