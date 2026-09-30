@@ -1,8 +1,10 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign in · mailwarden</title><link rel="stylesheet" href="/static/style.css"></head>
+<title>Sign in · mailwarden</title><link rel="stylesheet" href="/static/style.css">
+<link rel="icon" type="image/png" href="/static/logo-64.png">
+<link rel="apple-touch-icon" href="/static/logo-180.png"></head>
 <body><main class="narrow">
-<h1>mailwarden</h1>
+<h1 class="brand-title"><img src="/static/logo-180.png" alt="" width="48" height="48">mailwarden</h1>
 {% if expired %}<p>That sign-in link is invalid, expired or already used.</p>{% else %}<p>You need to sign in to view the dashboard.</p>{% endif %}
 <p>Run this in your terminal to open a fresh one-time sign-in link:</p>
 <pre>mailwarden open</pre>

@@ -33,7 +33,7 @@ from mailwarden.storage.base import AccountRegistry, Repository
 
 _SLUG = re.compile(SLUG_PATTERN)
 _MSG_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-_PUBLIC_PATHS = {"/login", "/static/style.css"}
+_PUBLIC_PATHS = {"/login", "/static/style.css", "/static/logo-64.png", "/static/logo-180.png", "/favicon.ico"}
 STAGE_COLUMNS = (Stage.APPLIED, Stage.ASSESSMENT, Stage.INTERVIEW, Stage.OFFER, Stage.REJECTION, Stage.OTHER)
 
 SECURITY_HEADERS = {
@@ -86,7 +86,9 @@ def create_app(deps: DashboardDeps) -> FastAPI:
     env.filters["ago"] = lambda t: relative_time(t, deps.now()) if t else ""
     env.filters["stage"] = _stage_label
     env.globals["csrf"] = csrf
-    stylesheet = resources.files("mailwarden.delivery.dashboard").joinpath("static/style.css").read_bytes()
+    static = resources.files("mailwarden.delivery.dashboard").joinpath("static")
+    stylesheet = static.joinpath("style.css").read_bytes()
+    logos = {name: static.joinpath(name).read_bytes() for name in ("logo-64.png", "logo-180.png")}
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -132,6 +134,17 @@ def create_app(deps: DashboardDeps) -> FastAPI:
     @app.get("/static/style.css")
     def style() -> Response:
         return Response(stylesheet, media_type="text/css")
+
+    @app.get("/static/{name}.png")
+    def logo(name: str) -> Response:
+        data = logos.get(f"{name}.png")
+        if data is None:
+            return PlainTextResponse("Not found", status_code=404)
+        return Response(data, media_type="image/png")
+
+    @app.get("/favicon.ico")
+    def favicon() -> Response:
+        return Response(logos["logo-64.png"], media_type="image/png")
 
     @app.get("/login")
     def login(request: Request, code: str = "") -> Response:

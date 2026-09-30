@@ -8,8 +8,10 @@ with a fresh one-time sign-in link (so it works even after the cookie expires).
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess  # nosec B404: fixed argv, no shell
 import sys
+from importlib import resources
 from pathlib import Path
 
 APP_NAME = "mailwarden.app"
@@ -36,7 +38,18 @@ def build(target_dir: Path, python: str, home: Path, *, run=subprocess.run) -> P
     app = target_dir / APP_NAME
     run(["/usr/bin/osacompile", "-o", str(app), "-e", applescript(python, home)],
         check=True, capture_output=True, timeout=60)
+    set_icon(app)
     return app
+
+
+def set_icon(app: Path) -> None:
+    """Replace osacompile's default applet icon with the mailwarden logo."""
+    icon = resources.files("mailwarden.assets").joinpath("mailwarden.icns")
+    target = app / "Contents" / "Resources" / "applet.icns"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with resources.as_file(icon) as src:
+        shutil.copyfile(src, target)
+    os.utime(app)  # nudge Finder/Dock to pick up the new icon
 
 
 def default_dir() -> Path:

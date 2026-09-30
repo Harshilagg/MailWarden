@@ -274,3 +274,17 @@ def test_pinned_item_shows_on_urgent_with_note(env):
     repo.close()
     html = client(env).get("/").text
     assert "Booking Holdings" in html and "It stays until you click Done" in html
+
+
+def test_logo_and_favicon_served_without_login(env):
+    c = client(env, logged_in=False)
+    for path in ("/favicon.ico", "/static/logo-64.png", "/static/logo-180.png"):
+        r = c.get(path)
+        assert r.status_code == 200 and r.headers["content-type"] == "image/png" and r.content[:4] == b"\x89PNG"
+        assert "default-src 'none'" in r.headers["content-security-policy"]
+    assert c.get("/static/other.png").status_code == 401  # only the known logo files are public
+
+
+def test_pages_reference_local_logo_only(env):
+    html = client(env).get("/").text
+    assert 'rel="icon" type="image/png" href="/static/logo-64.png"' in html and 'src="/static/logo-64.png"' in html

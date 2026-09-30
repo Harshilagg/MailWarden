@@ -211,3 +211,16 @@ def test_launcher_script_quotes_paths_and_runs_only_open(tmp_path, monkeypatch):
     app = launcher.build(tmp_path, "/py", tmp_path, run=lambda argv, **kw: calls.append(argv))
     assert app == tmp_path / "mailwarden.app"
     assert calls[0][:3] == ["/usr/bin/osacompile", "-o", str(app)]
+
+
+def test_launcher_gets_the_logo_icon(tmp_path, monkeypatch):
+    from mailwarden import launcher
+
+    monkeypatch.setattr(launcher.sys, "platform", "darwin")
+
+    def fake_osacompile(argv, **kw):
+        (tmp_path / "mailwarden.app" / "Contents" / "Resources").mkdir(parents=True)
+
+    app = launcher.build(tmp_path, "/py", tmp_path, run=fake_osacompile)
+    icon = app / "Contents" / "Resources" / "applet.icns"
+    assert icon.read_bytes()[:4] == b"icns"
