@@ -1,0 +1,35 @@
+# mailwarden settings. NON-SECRET values only.
+# Secrets (OAuth tokens, DB key, API keys) live in the OS keyring, never here.
+# This file must be chmod 600; mailwarden refuses to start otherwise.
+
+user_id = "local"
+
+[llm]
+# "ollama" (default): runs on this machine, free, nothing leaves the machine.
+# "groq": cloud, free tier, receives REDACTED text of SAFE mail only.
+#         Requires [groq] enabled = true below.
+backend = "ollama"
+# Subject + first N characters of the body are sent for classification.
+max_body_chars = 1500
+
+[ollama]
+# Must be localhost / 127.0.0.1; a remote Ollama would be data egress.
+base_url = "http://127.0.0.1:11434"
+# qwen2.5:3b (~2 GB) suits 8 GB machines without a GPU.
+# Use qwen2.5:7b (~4.7 GB) on machines with 16 GB RAM or Apple Silicon.
+model = "qwen2.5:3b"
+timeout_seconds = 180
+
+[groq]
+# Off by default. Keep your Groq org on the free tier (no billing method)
+# and it cannot incur charges; it is rate-limited instead.
+enabled = false
+model = "llama-3.1-8b-instant"
+
+[gmail]
+# Days fetched on first sync, or when Gmail's history cursor has expired.
+full_sync_days = 7
+max_messages_per_run = 200
+
+[outlook]
+enabled = false

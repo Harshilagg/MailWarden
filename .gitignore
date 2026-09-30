@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+.pytest_cache/
+
+# mailwarden runtime data: never commit
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlcipher
+digests/
+logs/
+*.log
+
+# Credentials and tokens
+client_secret*.json
+credentials*.json
+token*.json
+*.pem
+*.key
+.env
+.env.*
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

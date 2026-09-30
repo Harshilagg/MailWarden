@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mailwarden"
+version = "0.1.0"
+description = "Privacy-first, local-first email triage."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "pydantic>=2.7",
+    "keyring>=25",
+    "requests>=2.32",
+    "platformdirs>=4",
+    "PyYAML>=6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+mailwarden = "mailwarden.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mailwarden"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
