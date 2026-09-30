@@ -205,3 +205,15 @@ def test_regate_reports_urgent_items_affected(repo):
     print_regate(report, out, applied=False)
     assert report.urgent_reprocessed == 1
     assert "stay in Urgent until you click Done" in out.getvalue()
+
+
+@pytest.mark.parametrize(
+    "text", ["Deadline: 10-Oct-2026", "ends Oct-10", "register by 10Oct", "Last date 10th of October", "due 10-Oct-26"]
+)
+def test_find_deadline_formats(text):
+    assert find_deadline(text, TODAY) == dt.date(2026, 10, 10)
+
+
+@pytest.mark.parametrize("text", ["Deadline: 30 Sep, 11:59 PM", "Deadline 30 Sep 11:59 PM IST", "deadline 30-Sep 11:59"])
+def test_time_after_date_is_not_a_year(text):
+    assert find_deadline(text, TODAY) == dt.date(2026, 9, 30)

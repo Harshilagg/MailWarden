@@ -10,8 +10,12 @@ from mailwarden.core.text import clean
 _MONTHS = {m: i for i, m in enumerate(
     ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), start=1)}
 _MON = r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?"
-_DAY_MONTH = re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+(?:of\s+)?{_MON}(?:,?\s+(\d{{4}}))?", re.IGNORECASE)
-_MONTH_DAY = re.compile(rf"\b{_MON}\s+(\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s+(\d{{4}}))?", re.IGNORECASE)
+# Year: 4 digits after a comma/space/dash, or 2 digits only in the "10-Oct-26" form
+# (so "30 Sep, 11:59 PM" is not read as the year 2011).
+_DAY_MONTH = re.compile(
+    rf"\b(\d{{1,2}})(?:st|nd|rd|th)?[\s-]*(?:of\s+)?{_MON}(?:[,\s-]+(\d{{4}})\b|-(\d{{2}})(?![\d:]))?", re.IGNORECASE)
+_MONTH_DAY = re.compile(
+    rf"\b{_MON}[\s-]*(\d{{1,2}})(?:st|nd|rd|th)?\b(?:[,\s-]+(\d{{4}}))?", re.IGNORECASE)
 _NUMERIC = re.compile(r"(?<![\d/.-])(\d{1,2})[/.-](\d{1,2})[/.-](\d{4}|\d{2})(?![\d/.-])")
 _ISO = re.compile(r"(?<![\d-])(\d{4})-(\d{2})-(\d{2})(?![\d-])")
 _KEYWORD = re.compile(
@@ -40,7 +44,8 @@ def _make(year: int | None, month: int, day: int, today: dt.date) -> dt.date | N
 
 def _candidates(text: str, today: dt.date):
     for m in _DAY_MONTH.finditer(text):
-        yield m.start(), _make(int(m.group(3)) if m.group(3) else None, _MONTHS[m.group(2).lower()[:3]], int(m.group(1)), today)
+        year = m.group(3) or m.group(4)
+        yield m.start(), _make(int(year) if year else None, _MONTHS[m.group(2).lower()[:3]], int(m.group(1)), today)
     for m in _MONTH_DAY.finditer(text):
         yield m.start(), _make(int(m.group(3)) if m.group(3) else None, _MONTHS[m.group(1).lower()[:3]], int(m.group(2)), today)
     for m in _NUMERIC.finditer(text):  # day-first, as used in India
