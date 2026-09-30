@@ -426,7 +426,9 @@ a {
   margin: 0;
   padding: 0;
   display: inline-flex;
-  align-items: baseline;
+  flex-direction: column;   /* "Mail" stacked above "warden" */
+  align-items: flex-start;
+  padding-top: 12px;        /* the script capitals rise above their line box */
   white-space: nowrap;
   line-height: 0.8;
   cursor: default;
@@ -440,6 +442,9 @@ a {
   font-weight: 400;
   letter-spacing: -1px;
   line-height: 1;
+  /* A little bolder: Tempting has no bold face, so thicken the strokes with a thin
+     outline in the text colour instead of a synthetic (smeared) bold. */
+  -webkit-text-stroke: 0.6px currentColor;
 }
 
 /* "warden" — strong supporting type */
@@ -448,5 +453,6 @@ a {
   font-size: 34px;
   font-weight: 700;
   letter-spacing: -1.8px;
-  line-height: 1;
+  line-height: 0.9;
+  margin-top: 0;            /* sits just under "Mail", clear of its flourish */
 }
