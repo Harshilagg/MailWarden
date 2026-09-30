@@ -189,3 +189,149 @@ def test_cli_build_dry_run_then_write(home, monkeypatch, capsys):
 )
 def test_project_one_line_skips_metadata(md, expected):
     assert prof.parse_project(md, "x.md", None).one_line == expected
+
+
+# --- hand-written sections, overrides, role matching, one-liners --------------------------
+
+HAND = {
+    "skill_overrides": {"go": 0.95, "react": 0.4, "saga pattern": 0.7},
+    "extra_project_skills": {"mailwarden": ["regex", "security"], "Realtime chat": ["websockets"]},
+    "education": "B.Tech, Computer Science, Indian Institute of Technology (2022-2026)",
+    "experience_summary": "Two backend internships building REST services.",
+    "highlights": ["Built a privacy-first email triage tool used daily"],
+}
+
+
+def test_hand_sections_survive_rebuild_and_merge(home):
+    first = prof.build_profile(home, locations=["Remote"], today=TODAY)
+    prof.write(home, prof.dump({**first, **HAND}))
+    again = prof.build_profile(home, locations=["Remote"], today=TODAY, existing=prof.load_existing(home))
+    for key, value in HAND.items():
+        assert again[key] == value, key
+    mw = next(p for p in again["projects"] if p["name"] == "Mailwarden")
+    assert "regex" in mw["skills"] and "security" in mw["skills"] and "python" in mw["skills"]
+    chat = next(p for p in again["projects"] if p["name"] == "Realtime chat")
+    assert chat["skills"].count("websockets") == 1  # already detected: not duplicated
+    assert list(again)[:3] == ["skills", "skill_overrides", "experience_years"]
+
+
+def test_effective_skills_overrides_replace_and_add():
+    eff = prof.effective_skills({"skills": {"react": 1.0, "go": 0.44, "python": 0.44},
+                                 "skill_overrides": {"React": 0.4, "go": 0.95, "saga pattern": 0.7}})
+    assert eff == {"go": 0.95, "saga pattern": 0.7, "python": 0.44, "react": 0.4}
+    assert prof.effective_skills({"skills": {"a": 1}}) == {"a": 1.0}
+
+
+@pytest.mark.parametrize(
+    "bad, match",
+    [
+        ({"skill_overrides": {"go": "high"}}, "skill_overrides"),
+        ({"skill_overrides": ["go"]}, "skill_overrides"),
+        ({"extra_project_skills": {"x": "go"}}, "extra_project_skills"),
+        ({"highlights": "one string"}, "highlights"),
+    ],
+)
+def test_invalid_hand_sections_rejected(home, bad, match):
+    base = prof.build_profile(home, locations=["Remote"], today=TODAY)
+    prof.write(home, prof.dump({**base, **bad}))
+    with pytest.raises(prof.ProfileError, match=match):
+        prof.build_profile(home, locations=["Remote"], today=TODAY, existing=prof.load_existing(home))
+
+
+def test_unmatched_extra_projects_reported():
+    p = {"projects": [{"name": "Mailwarden"}], "extra_project_skills": {"mailwarden": [], "Ghost": []}}
+    assert prof.unmatched_extra_projects(p) == ["Ghost"]
+
+
+def test_contact_details_in_hand_sections_block_the_write():
+    text = prof.dump({"skills": {}, "education": "B.Tech, contact aarav@example.com"})
+    assert "an email address" in prof.contact_leaks(text, None)
+
+
+@pytest.mark.parametrize(
+    "title, entries, expected",
+    [
+        ("SDE-I, Rewards", ["sde / sde-1 / sde i"], "sde / sde-1 / sde i"),
+        ("SDE 1 - Backend", ["sde / sde-1 / sde i"], "sde / sde-1 / sde i"),
+        ("Sr. SDE II", ["sde ii / sde-2"], "sde ii / sde-2"),
+        ("Software Engineer (Backend)", ["backend / platform", "software engineer"], "backend / platform"),
+        ("Full-Stack Developer", ["full stack / fullstack / full-stack"], "full stack / fullstack / full-stack"),
+        ("Sales Engineer", ["SALES / business development"], "SALES / business development"),
+        ("Principal Designer", ["sde / sde-1"], None),
+        ("Backendish Wizard", ["backend"], None),  # whole words only
+        ("C++ Developer", ["c++ / c#"], "c++ / c#"),
+    ],
+)
+def test_match_role(title, entries, expected):
+    assert prof.match_role(title, entries) == expected
+
+
+@pytest.mark.parametrize(
+    "md, expected",
+    [
+        ("# X\nRepo: https://github.com/a/x\n**One line:** Durable job queue in Go, built end to end: storage, "
+         "a gRPC API, retries with backoff and dead letters, an analytics dashboard, plus chaos tests and load "
+         "testing across three nodes. Second sentence here.\nStack: Go\n",
+         "Durable job queue in Go, built end to end: storage, a gRPC API, retries with backoff and dead letters, "
+         "an analytics dashboard, plus chaos tests and load testing across three nodes."),
+        ("# X\nSome earlier paragraph that is long enough to count.\n- One line: Ledger with Node.js and v1.2 "
+         "APIs, e.g. transfers.\n", "Ledger with Node.js and v1.2 APIs, e.g. transfers."),
+        ("# X\nRepo: https://github.com/a/x\nFirst real paragraph sentence goes here. Then more.\n",
+         "First real paragraph sentence goes here."),
+    ],
+)
+def test_one_line_is_full_first_sentence(md, expected):
+    assert prof.parse_project(md, "x.md", None).one_line == expected
+
+
+HAND_TEXT = """# My own header comment.
+# refreshed; skill_overrides and everything below experience_years keep your edits.
+
+# Hand-set weights. These win.
+skill_overrides: {go: 0.95, react: 0.4}
+
+experience_years: 3.0
+
+education: B.Tech, Indian Institute of Technology (2026)
+experience_summary: >
+  Two backend internships
+  building REST services.
+# Skills the parser misses.
+extra_project_skills:
+  Mailwarden: [regex, security]
+target_roles:
+  - sde / sde-1 / sde i   # alternatives
+remote_ok: true
+"""
+
+
+def test_render_keeps_hand_formatting_and_replaces_generated_blocks(home):
+    old = yaml.safe_load(HAND_TEXT)
+    new = prof.build_profile(home, locations=["Remote"], today=TODAY, existing=old)
+    text = prof.render(HAND_TEXT, new)
+    for line in HAND_TEXT.splitlines():
+        if not line.startswith("experience_years"):
+            assert line in text.splitlines(), line  # every hand-written line kept verbatim
+    parsed = yaml.safe_load(text)
+    assert parsed["experience_years"] == 0.5  # generated: refreshed
+    assert "python" in parsed["skills"] and parsed["skill_overrides"] == {"go": 0.95, "react": 0.4}
+    assert text.index("skills:") < text.index("skill_overrides:")  # inserted before the first key
+    mw = next(p for p in parsed["projects"] if p["name"] == "Mailwarden")
+    assert {"regex", "security", "python"} <= set(mw["skills"])
+    d = prof.diff(HAND_TEXT, text)
+    assert "-# Hand-set weights" not in d and "-experience_summary" not in d and "-extra_project_skills" not in d
+
+
+def test_render_replaces_existing_generated_blocks_in_place(home):
+    new = prof.build_profile(home, locations=["Remote"], today=TODAY)
+    text1 = prof.render(None, new)
+    edited = text1.replace("remote_ok: true", "remote_ok: true  # keep this comment")
+    text2 = prof.render(edited, new)
+    assert text2 == edited  # nothing generated changed -> identical file
+    assert prof.diff(edited, text2) == ""
+
+
+def test_contact_leaks_ignore_comments_but_check_data():
+    text = "# made by Aarav, see https://example.com\nskills: {python: 1.0}\n"
+    assert prof.contact_leaks(text, "Aarav Mehta") == []
+    assert "your name" in prof.contact_leaks("highlights: [Aarav built it]\n", "Aarav Mehta")

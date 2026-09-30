@@ -197,9 +197,17 @@ chmod 600 <home>/profile/*.pdf <home>/profile/projects/*.md
 ```
 
 `profile.yaml` holds weighted skills, experience years, seniority, target/avoid roles,
-locations and your projects. Edit it by hand. On rebuild, the derived parts (skills,
-experience, projects) are refreshed, while your preferences (seniority, roles,
-locations, remote_ok) are kept. Only the project files count as project evidence; the
+locations and your projects. Edit it by hand. A rebuild only replaces the generated
+blocks (`skills`, `experience_years`, `projects`); every other line is kept exactly as
+you wrote it, comments and formatting included. Hand sections:
+
+- `skill_overrides: {skill: weight}`: replace auto weights and add undetected skills
+  (the scorer uses auto weights overridden by these).
+- `extra_project_skills: {project name: [skills]}`: merged into that project's skills
+  on every rebuild (`build` warns if a name matches no project file).
+- `education`, `experience_summary`, `highlights`: free text used by the fit scorer.
+- `target_roles` / `avoid_roles`: entries may list alternatives with `/`, e.g.
+  `sde / sde-1 / sde i` (case-insensitive, whole words). Only the project files count as project evidence; the
 CV's Projects section is ignored. The file never contains contact details: `build`
 refuses to write it if it would include an email, phone number, link or your name,
 because it's later given to the LLM for fit scoring.

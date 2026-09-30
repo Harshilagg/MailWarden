@@ -422,7 +422,7 @@ def cmd_profile(args: argparse.Namespace) -> int:
     old_text = path.read_text("utf-8") if path.exists() else ""
     new = prof.build_profile(home, locations=settings.job_alerts.target_locations,
                              today=dt.date.today(), existing=existing)
-    new_text = prof.dump(new)
+    new_text = prof.render(old_text, new)
     cv_path, _ = prof._inputs(home)
     person = prof.candidate_name(prof.read_pdf_text(cv_path))
     leaks = prof.contact_leaks(new_text, person)
@@ -431,8 +431,10 @@ def cmd_profile(args: argparse.Namespace) -> int:
                          + ". Remove it from the project files (profile.yaml is given to the LLM).")
     change = prof.diff(old_text, new_text)
     print(change if change else "profile.yaml is already up to date.")
-    top = ", ".join(list(new["skills"])[:8]) or "none found"
-    print(f"\nskills: {len(new['skills'])} (top: {top})")
+    for name in prof.unmatched_extra_projects(new):
+        print(f"warning: extra_project_skills has '{name}', which matches no project file name")
+    top = ", ".join(list(prof.effective_skills(new))[:8]) or "none found"
+    print(f"\nskills: {len(prof.effective_skills(new))} effective, after overrides (top: {top})")
     print(f"experience_years: {new['experience_years']}   seniority: {new['seniority']}   "
           f"projects: {len(new['projects'])}")
     if args.dry_run:

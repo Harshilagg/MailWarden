@@ -35,8 +35,14 @@ PROFILE_FILE = "profile.yaml"
 MAX_PDF_PAGES = 10
 MAX_TEXT = 200_000
 
-# Preferences you own: kept as-is when the profile is refreshed.
+# Sections you own: kept as-is when the profile is refreshed.
 PREFERENCE_KEYS = ("seniority", "target_roles", "avoid_roles", "locations", "remote_ok")
+HAND_KEYS = ("skill_overrides", "extra_project_skills", "education", "experience_summary", "highlights")
+PRESERVED_KEYS = PREFERENCE_KEYS + HAND_KEYS
+# Output order of profile.yaml.
+KEY_ORDER = ("skills", "skill_overrides", "experience_years", "seniority", "education", "experience_summary",
+             "highlights", "target_roles", "avoid_roles", "locations", "remote_ok", "projects",
+             "extra_project_skills")
 DEFAULT_TARGET_ROLES = ["software engineer", "backend", "full stack", "sde", "sre", "platform engineer"]
 DEFAULT_AVOID_ROLES = ["security-only", "sales", "support", "non-engineering"]
 
@@ -228,8 +234,16 @@ _META_KEYS = re.compile(
 )
 
 
-def _first_sentence(md: str, person: str | None) -> str:
-    """First real sentence of a project file (>= 5 words), skipping metadata lines like 'Repo: ...'."""
+_ONE_LINE_KEYS = re.compile(r"^(?:one[\s-]*line(?:r)?|summary|tl;?dr|description|about)$", re.IGNORECASE)
+# Sentence end: . ! ? followed by space and a capital/quote/end; avoids "e.g. foo", "v1.2", "Node.js".
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"'(])")
+
+
+def _first_full_sentence(text: str) -> str:
+    return _SENTENCE_END.split(text.strip(), maxsplit=1)[0].strip()
+
+
+def _lines(md: str):
     in_code = False
     for raw in md.splitlines():
         line = raw.strip()
@@ -238,18 +252,27 @@ def _first_sentence(md: str, person: str | None) -> str:
             continue
         if in_code or not line or line.startswith(("#", "|", "![", ">")):
             continue
-        line = re.sub(r"^[-*•+]\s+|^\d+[.)]\s+", "", line)
+        yield re.sub(r"^[-*•+]\s+|^\d+[.)]\s+", "", line)
+
+
+def _first_sentence(md: str, person: str | None) -> str:
+    """The project's one-liner: the full first sentence of its "One line:" field if it has one,
+    else of its first real paragraph (>= 5 words). Never cut mid-sentence."""
+    fallback = ""
+    for line in _lines(md):
+        key = None
         if m := _KEY_VALUE.match(line):
-            key, value = m.group(1).strip(), m.group(2).strip()
-            if _META_KEYS.match(key):
-                continue  # metadata: links, stack lists, dates
-            line = value  # e.g. "Summary: Built a ..." -> "Built a ..."
-        line = re.sub(r"[*_`]{1,3}", "", line)  # markdown emphasis/code markers
-        text = scrub(line, person)
-        if len(text.split()) >= 5:
-            sentence = re.split(r"(?<=[.!?])\s", text, maxsplit=1)[0]
-            return " ".join(sentence.split()[:25])
-    return ""
+            key, line = m.group(1).strip(), m.group(2).strip()
+        text = scrub(re.sub(r"[*_`]{1,3}", "", line), person)
+        if key and _ONE_LINE_KEYS.match(key):
+            if text:
+                return _first_full_sentence(text)
+            continue
+        if key and _META_KEYS.match(key):
+            continue
+        if not fallback and len(text.split()) >= 5:
+            fallback = _first_full_sentence(text)
+    return fallback
 
 
 @dataclass(frozen=True)
@@ -341,10 +364,67 @@ def build_profile(home: Path, *, locations: list[str], today: dt.date,
         "remote_ok": True,
         "projects": [{"name": p.name, "skills": p.skills, "one_line": p.one_line} for p in projects],
     }
-    for key in PREFERENCE_KEYS:  # your hand edits to preferences survive a rebuild
+    for key in PRESERVED_KEYS:  # your hand-written sections survive a rebuild
         if existing and key in existing:
             profile[key] = existing[key]
-    return profile
+    _validate_hand_sections(profile)
+    extra = profile.get("extra_project_skills") or {}
+    by_name = {str(k).strip().lower(): v for k, v in extra.items()}
+    for proj in profile["projects"]:
+        for skill in by_name.get(proj["name"].strip().lower(), []):
+            skill = str(skill).strip().lower()
+            if skill and skill not in proj["skills"]:
+                proj["skills"].append(skill)
+    return {k: profile[k] for k in KEY_ORDER if k in profile} | {
+        k: v for k, v in profile.items() if k not in KEY_ORDER}
+
+
+def unmatched_extra_projects(profile: dict) -> list[str]:
+    """extra_project_skills entries whose project name matches no project file."""
+    names = {p["name"].strip().lower() for p in profile.get("projects", [])}
+    return [k for k in (profile.get("extra_project_skills") or {}) if str(k).strip().lower() not in names]
+
+
+def _validate_hand_sections(profile: dict) -> None:
+    so = profile.get("skill_overrides")
+    if so is not None:
+        if not isinstance(so, dict) or not all(
+                isinstance(w, (int, float)) and not isinstance(w, bool) and 0 <= w <= 10 for w in so.values()):
+            raise ProfileError("skill_overrides must map skill names to numbers (weights), e.g. go: 0.9")
+    eps = profile.get("extra_project_skills")
+    if eps is not None and (not isinstance(eps, dict) or not all(isinstance(v, list) for v in eps.values())):
+        raise ProfileError("extra_project_skills must map project names to lists of skills")
+    hl = profile.get("highlights")
+    if hl is not None and not isinstance(hl, list):
+        raise ProfileError("highlights must be a list")
+
+
+def effective_skills(profile: dict) -> dict[str, float]:
+    """What the scorer uses: auto-detected weights, replaced/extended by skill_overrides."""
+    merged = {str(k).strip().lower(): float(v) for k, v in (profile.get("skills") or {}).items()}
+    for k, v in (profile.get("skill_overrides") or {}).items():
+        merged[str(k).strip().lower()] = float(v)
+    return dict(sorted(merged.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
+# --- role matching ("/" separates alternatives) ------------------------------------------
+
+def _norm_title(text: str) -> str:
+    return " " + re.sub(r"[^a-z0-9+#]+", " ", clean(text).lower()).strip() + " "
+
+
+def role_alternatives(entry: str) -> list[str]:
+    """ "sde / sde-1 / sde i" -> ["sde", "sde 1", "sde i"] (normalised)."""
+    return [a.strip() for a in (_norm_title(part).strip() for part in str(entry).split("/")) if a.strip()]
+
+
+def match_role(title: str, entries: list[str]) -> str | None:
+    """The first entry any of whose "/"-separated alternatives appears in ``title`` as whole words."""
+    t = _norm_title(title)
+    for entry in entries:
+        if any(f" {alt} " in t for alt in role_alternatives(entry)):
+            return entry
+    return None
 
 
 HEADER = (
@@ -357,6 +437,57 @@ HEADER = (
 
 def dump(profile: dict) -> str:
     return HEADER + yaml.safe_dump(profile, sort_keys=False, allow_unicode=True, width=100)
+
+
+GENERATED_KEYS = ("skills", "experience_years", "projects")
+_TOP_KEY = re.compile(r"^([A-Za-z_][\w-]*)\s*:(?:\s|$)")
+
+
+def _blocks(lines: list[str]) -> dict[str, tuple[int, int]]:
+    """Top-level key -> (start, end) line span. Trailing blank/comment lines belong to the next key."""
+    starts = [(i, m.group(1)) for i, line in enumerate(lines) if (m := _TOP_KEY.match(line))]
+    spans = {}
+    for n, (i, key) in enumerate(starts):
+        end = starts[n + 1][0] if n + 1 < len(starts) else len(lines)
+        while end - 1 > i and (not lines[end - 1].strip() or lines[end - 1].lstrip().startswith("#")):
+            end -= 1
+        spans[key] = (i, end)
+    return spans
+
+
+def _dump_key(key: str, value) -> list[str]:
+    return yaml.safe_dump({key: value}, sort_keys=False, allow_unicode=True, width=100).splitlines()
+
+
+def render(existing_text: str | None, profile: dict) -> str:
+    """profile.yaml text. With an existing file, only the generated blocks (skills,
+    experience_years, projects) are replaced; every other line (your comments,
+    formatting, order) is kept byte for byte."""
+    if not existing_text or not existing_text.strip():
+        return dump(profile)
+    lines = existing_text.splitlines()
+    for key in GENERATED_KEYS:
+        new_block = _dump_key(key, profile[key])
+        spans = _blocks(lines)
+        if key in spans:
+            start, end = spans[key]
+            lines[start:end] = new_block
+        elif key == "projects":
+            lines += [""] + new_block
+        else:  # skills / experience_years: insert before the first top-level key
+            first = min((s for s, _ in spans.values()), default=len(lines))
+            lines[first:first] = new_block
+    present = set(_blocks(lines))
+    for key, value in profile.items():  # defaults for sections your file doesn't have yet
+        if key not in present and key not in GENERATED_KEYS:
+            lines += [""] + _dump_key(key, value)
+    text = "\n".join(lines) + "\n"
+    parsed = yaml.safe_load(text)
+    for key, value in profile.items():  # nothing of yours may change meaning
+        if parsed.get(key) != value:
+            raise ProfileError(f"could not update profile.yaml safely (section '{key}' would change); "
+                               "fix its formatting or run with --dry-run to inspect")
+    return text
 
 
 def load_existing(home: Path) -> dict | None:
@@ -384,13 +515,14 @@ def write(home: Path, text: str) -> Path:
 
 
 def contact_leaks(text: str, person: str | None) -> list[str]:
-    """What in ``text`` looks like contact details (used to refuse writing a leaky profile)."""
+    """What in the profile *data* looks like contact details (comments never reach the LLM)."""
+    data = yaml.safe_load(text) or {}
+    body = yaml.safe_dump(data, allow_unicode=True, width=10_000)
     leaks = []
-    if _EMAIL.search(text):
+    if _EMAIL.search(body):
         leaks.append("an email address")
-    if _PHONE.search(text):
+    if _PHONE.search(body):
         leaks.append("a phone number")
-    body = text.split("\n", HEADER.count("\n"))[-1]  # ignore our own header comment
     if _URL.search(body) or _HANDLE.search(body):
         leaks.append("a link or profile handle")
     if person and any(len(p) >= 3 and re.search(rf"\b{re.escape(p)}\b", body, re.IGNORECASE)
