@@ -9,8 +9,8 @@ venv:
 
 # Pinned, hashed lockfiles (pip-tools compatible format).
 lock:
-	uv pip compile pyproject.toml --generate-hashes -o requirements.lock
-	uv pip compile pyproject.toml --extra dev --generate-hashes -o requirements-dev.lock
+	uv pip compile pyproject.toml --universal --generate-hashes -o requirements.lock
+	uv pip compile pyproject.toml --universal --extra dev --generate-hashes -o requirements-dev.lock
 
 install: venv
 	uv pip sync --python $(BIN)/python --require-hashes requirements-dev.lock

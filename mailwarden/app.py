@@ -83,6 +83,48 @@ class App:
     def repository(self) -> Repository:
         return SQLCipherRepository.open(self.home / DB_RELATIVE_PATH, self.secrets, self.user_id)
 
+    def dashboard_url(self) -> str:
+        return f"http://127.0.0.1:{self.settings.dashboard.port}"
+
+    def notifier(self):
+        from mailwarden.delivery.desktop_notify import DesktopNotifier
+
+        n = self.settings.notifications
+        if not n.enabled or n.backend == "none":
+            return None
+        return DesktopNotifier(backend=n.backend, dashboard_base_url=self.dashboard_url(),
+                               click_wait_seconds=n.click_wait_seconds)
+
+    def digest_sink(self):
+        from mailwarden.delivery.digest_file import MarkdownDigestSink
+
+        folder = self.settings.digest.markdown_dir.strip()
+        return MarkdownDigestSink(Path(folder).expanduser()) if folder else None
+
+    def dashboard_app(self):
+        from mailwarden.delivery.dashboard.app import DashboardDeps, create_app
+
+        # Open once to create the DB/key if needed, then reuse the key for per-request connections.
+        self.repository().close()
+        key = self.secrets.get(SecretKeys.db_key(self.user_id)) or ""
+        path = self.home / DB_RELATIVE_PATH
+
+        def rules_summary() -> dict[str, dict[str, list[str]]]:
+            rules = self.rules()
+            out: dict[str, dict[str, list[str]]] = {}
+            for table, kind in ((rules.domains, "domains"), (rules.addresses, "senders")):
+                for entry, tier in sorted(table.items()):
+                    out.setdefault(tier.value, {"domains": [], "senders": []})[kind].append(entry)
+            return out
+
+        deps = DashboardDeps(
+            user_id=self.user_id, port=self.settings.dashboard.port, secrets=self.secrets,
+            repo_factory=lambda: SQLCipherRepository(path, key), accounts=self.accounts,
+            rules_summary=rules_summary, backend_description=self.backend_description(),
+            outbound_hosts=sorted(self.session.allowed), digest_times=self.settings.digest.times,
+        )
+        return create_app(deps)
+
     def provider_for(self, account: Account) -> MailProvider:
         try:
             return self.providers[account.provider]

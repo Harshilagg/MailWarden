@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Urgent · mailwarden{% endblock %}
+{% block content %}
+<h1>Urgent</h1>
+<p class="lead">Job mail that needs you, soonest deadline first.</p>
+{% if not cards %}
+<p class="empty">Nothing needs your attention right now.</p>
+{% endif %}
+{% for i, gmail, overdue in cards %}{% include "_card.html" %}{% endfor %}
+{% endblock %}

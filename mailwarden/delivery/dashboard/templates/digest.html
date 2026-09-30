@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Digest · mailwarden{% endblock %}
+{% block content %}
+<h1>Digest</h1>
+<p class="lead">{% if live %}Last 24 hours (no digest generated yet){% else %}Generated {{ generated|ago }}{% endif %}.
+{% if d.urgent %} <a href="/">{{ d.urgent }} urgent job item{{ "s" if d.urgent != 1 }}</a> are in the Urgent view.{% endif %}</p>
+{% if not sections and not sensitive_total and not d.ignored %}<p class="empty">No new mail in this period.</p>{% endif %}
+{% for title, rows, collapsed in sections %}
+<section class="digest-section">
+  {% if collapsed %}<details><summary><h2>{{ title }} <span class="count">{{ rows|length }}</span></h2></summary>{% else %}<h2>{{ title }} <span class="count">{{ rows|length }}</span></h2>{% endif %}
+  <ul class="entries">
+  {% for e, gmail, when in rows %}
+    <li><span class="sender">{{ e.sender }}</span> <span class="summary">{{ e.summary }}</span>
+      <span class="meta">{{ when|ago }}{% if gmail %} · <a href="{{ gmail }}" target="_blank" rel="noopener noreferrer">Open in Gmail</a>{% endif %}</span></li>
+  {% endfor %}
+  </ul>
+  {% if collapsed %}</details>{% endif %}
+</section>
+{% endfor %}
+{% if sensitive_total %}
+<section class="digest-section">
+  <h2>{{ sensitive_total }} sensitive email{{ "s" if sensitive_total != 1 }} (not processed)</h2>
+  <ul class="entries">{% for name, count in d.sensitive_by_sender.items() %}<li><span class="sender">{{ name }}</span> <span class="count">{{ count }}</span></li>{% endfor %}</ul>
+</section>
+{% endif %}
+{% if d.ignored %}<p class="meta">{{ d.ignored }} ignored email{{ "s" if d.ignored != 1 }}.</p>{% endif %}
+{% if d.unclassified %}<p class="meta">{{ d.unclassified }} email{{ "s" if d.unclassified != 1 }} could not be classified.</p>{% endif %}
+{% endblock %}

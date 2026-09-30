@@ -157,6 +157,7 @@ class EmailMeta(_Frozen):
     held_job: bool = False
     held_company: str | None = Field(default=None, max_length=200)
     held_stage: Stage | None = None
+    dismissed: bool = False
 
     @model_validator(mode="after")
     def _sensitive_is_minimal(self) -> EmailMeta:

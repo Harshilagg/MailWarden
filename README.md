@@ -11,7 +11,7 @@ rest into a digest, and shows everything on a local dashboard.
   are caught by a local gate and **never** reach any LLM.
 - OAuth tokens and keys live only in your OS keyring.
 
-> Status: phase 3 of 5 (classification and storage). See `SECURITY.md`.
+> Status: phase 4 of 5 (delivery). See `SECURITY.md`.
 
 ## Requirements
 
@@ -105,7 +105,63 @@ To stay fully local instead, install Ollama, `ollama pull qwen2.5:3b`, and set
 | `mailwarden promote <address-or-domain> <tier>` | Move a sender to `priority`, `sensitive`, `ignore`, `job_alert` or `default` |
 | `mailwarden forget-account <n>` | Revoke token at Google, delete it from the keyring, delete the account's stored data |
 
-`digest`, `dashboard` and notifications arrive in phase 4.
+| `mailwarden dashboard [--open]` | Start the local dashboard on `127.0.0.1:8765` and print a one-time sign-in link |
+| `mailwarden open [--print-only]` | Open a fresh one-time sign-in link to the running dashboard |
+| `mailwarden digest` | Build the digest now (shown on the dashboard; optional Markdown copy) |
+| `mailwarden schedule [--platform macos\|linux\|windows]` | Generate launchd / systemd / Task Scheduler files to review and install |
+
+Add `--quiet` before any command for warnings-only output (used by scheduled jobs).
+
+## Dashboard
+
+```sh
+.venv/bin/mailwarden dashboard --open
+```
+
+- **Urgent**: job mail that needs you, soonest deadline first, including held-back
+  job mail ("Amex · assessment · needs your attention"). Each item has
+  **Open in Gmail** and **Done**.
+- **Applications**: a board of companies by stage, with each application's history.
+- **Digest**: the latest digest, grouped by category, with one-line summaries.
+- **Sensitive**: counts by sender only.
+- **Settings**: the classifier, allowed outbound hosts, accounts and sender tiers (read-only).
+
+The dashboard only listens on 127.0.0.1 and has no external assets or JavaScript.
+Signing in uses a one-time link (valid 10 minutes). After that a cookie keeps you
+signed in for 90 days. If you're signed out, run `mailwarden open`.
+
+## Notifications
+
+Job mail that needs action (an assessment, interview or offer, or an action for a
+company you're tracking or a priority sender) triggers a desktop notification
+showing only the company, stage and deadline. Clicking it opens the entry on the dashboard.
+
+- **macOS**: `brew install terminal-notifier` (free). Without it, mailwarden
+  falls back to `osascript`, which shows the notification but clicking it does
+  nothing. The `desktop-notifier` library can't be used with Homebrew's
+  unsigned Python.
+- **Linux / Windows**: uses `desktop-notifier`.
+- Configure under `[notifications]` in `config.toml`, or set `enabled = false`.
+
+## Digest
+
+The scheduled digest runs at `[digest] times` (default 08:00 and 18:00) and covers
+the mail since the previous digest. To also write a Markdown copy, set
+`[digest] markdown_dir`. It's plaintext, created mode 600.
+
+## Scheduling
+
+```sh
+.venv/bin/mailwarden schedule          # writes files to <home>/schedule/<platform>/ and prints install commands
+```
+
+- **macOS**: launchd agents that sync every 10 minutes, build the digest at your
+  digest times, and keep the dashboard running. They use `StartCalendarInterval`,
+  so a run missed while the laptop sleeps happens on wake (cron would skip it).
+- **Linux**: systemd user timers with `Persistent=true`.
+- **Windows**: Task Scheduler XML with "run as soon as possible after a missed start".
+
+Logs go to `<home>/logs/` (mode 600).
 
 ## Tuning sender rules
 

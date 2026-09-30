@@ -200,3 +200,18 @@ def test_llm_budget_exhausted_leaves_rest_pending(repo):
     llm = RateLimitedBackend(FakeLLM(INTERVIEW), per_minute=600, per_run=2, sleep=lambda s: None)
     stats = runner(repo, Provider(msgs), llm).run([ACCOUNT])
     assert stats.classified == 2 and stats.pending == 2
+
+
+def test_runner_notifies_through_notifier(repo):
+    sent = []
+
+    class N:
+        def notify(self, alert):
+            sent.append(alert)
+
+    msg = make("no-reply@greenhouse.io", "Acme Recruiting", "Interview", "Please pick a slot.", message_id="job")
+    r = Runner(user_id="local", repo=repo, rules=RULES, llm=FakeLLM(INTERVIEW), provider_for=lambda a: Provider({"job": msg}),
+               max_body_chars=1500, max_per_run=10, notifier=N())
+    r.run([ACCOUNT])
+    assert len(sent) == 1 and sent[0].company == "Acme" and sent[0].account == "personal"
+    assert "pick a slot" not in sent[0].title().lower()

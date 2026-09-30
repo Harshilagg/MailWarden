@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Applications · mailwarden{% endblock %}
+{% block content %}
+<h1>Applications <span class="count">{{ total }}</span></h1>
+{% if not columns %}<p class="empty">No applications tracked yet. They appear as job mail is classified.</p>{% endif %}
+<div class="board">
+{% for stage, apps in columns %}
+  <section class="column">
+    <h2><span class="pill stage-{{ stage }}">{{ stage|stage }}</span> <span class="count">{{ apps|length }}</span></h2>
+    {% for a in apps %}
+    <article class="card compact">
+      <h3>{{ a.company }}</h3>
+      {% if a.role %}<p class="role">{{ a.role }}</p>{% endif %}
+      <p class="meta">Updated {{ a.last_update|ago }}</p>
+      {% set events = history[(a.company, a.role)] %}
+      {% if events %}
+      <details><summary>History ({{ events|length }})</summary>
+        <ol class="history">
+        {% for e in events %}<li><span class="pill stage-{{ e.stage }}">{{ e.stage|stage }}</span> {{ e.occurred_at|ago }}</li>{% endfor %}
+        </ol>
+      </details>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </section>
+{% endfor %}
+</div>
+{% endblock %}

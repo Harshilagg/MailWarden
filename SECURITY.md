@@ -143,6 +143,51 @@ Access tokens are held only in memory. Email bodies and subjects exist only in m
 files are group/world accessible, or if the keyring backend is not a real OS
 keyring.
 
+## Local dashboard
+
+- Listens on `127.0.0.1` only. Any other `dashboard.host` is refused by config
+  and again when the server starts.
+- The `Host` header must be `127.0.0.1:<port>` or `localhost:<port>`, which blocks
+  DNS rebinding.
+- Every page except the sign-in page and the stylesheet needs a cookie holding a
+  random per-install token from the OS keyring. The cookie is HttpOnly,
+  SameSite=Strict and lasts 90 days.
+- The cookie is set via a one-time sign-in link that expires in 10 minutes. Only
+  the link code's SHA-256 hash is stored, in the keyring.
+- Every state-changing request (Done, Sign out) is a POST that must carry a CSRF
+  token. If the request has an `Origin` header, it must be the dashboard's own.
+- Every response carries `Content-Security-Policy: default-src 'none'; style-src
+  'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri
+  'none'` (no scripts at all), plus `X-Frame-Options: DENY`, `nosniff`,
+  `Cache-Control: no-store`, `Referrer-Policy: same-origin` and COOP/CORP.
+- All pages are server-rendered with auto-escaping, and no assets load from
+  other hosts. The API docs routes are disabled, and access logs are off, so
+  sign-in links are never logged.
+- Sensitive mail appears only as counts by sender name. Held-back job mail shows
+  company, stage and a friendly reason, never the subject.
+- "Open in Gmail" is a link your browser follows. mailwarden itself makes no
+  request to `mail.google.com`.
+
+## Notifications
+
+Notifications are local. They show only company, stage and deadline, or
+"needs your attention" for held-back job mail, and never a summary, subject or
+link text. On macOS they're sent via `terminal-notifier` or `osascript`; text
+is passed as a program argument, never inserted into a script. Clicking one
+opens a `http://127.0.0.1:<port>/i/<account>/<message-id>` dashboard URL.
+
+## Digest files
+
+The digest is stored in the encrypted database. The optional Markdown copy
+(`[digest] markdown_dir`, off by default) is **plaintext**: one-line summaries
+and sensitive-sender counts, no links or subjects. Files are mode 600 in a
+mode-700 folder. Leave it off if disk access is part of your threat model.
+
+## Scheduled jobs
+
+The generated launchd, systemd and Task Scheduler jobs run with `umask 077`, so
+their log files are private. They run as your user with no extra privileges.
+
 ## Logging
 
 Logs never include bodies, subjects, tokens or keys. A scrubbing filter on

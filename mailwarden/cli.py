@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import getpass
 import logging
 import re
 import sys
+import webbrowser
 from pathlib import Path
 
 from mailwarden import __version__
@@ -15,6 +17,7 @@ from mailwarden.config import RULES_FILE, ConfigError, home_dir, init_home
 from mailwarden.core.classify.base import BackendError
 from mailwarden.core.models import SLUG_PATTERN, Account, ProviderKind, Tier
 from mailwarden.core.runner import Runner
+from mailwarden.delivery.dashboard.server import UnsafeBind
 from mailwarden.storage.sqlite_store import StoreError
 from mailwarden.core.sender_rules import RulesError, SenderRules, normalise_entry, set_entry_tier
 from mailwarden.dryrun import run_dry_run
@@ -195,6 +198,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             provider_for=app.provider_for,
             max_body_chars=app.settings.llm.max_body_chars,
             max_per_run=app.settings.gmail.max_messages_per_run,
+            notifier=app.notifier(),
         ).run(accounts)
     finally:
         repo.close()
@@ -207,6 +211,72 @@ def cmd_run(args: argparse.Namespace) -> int:
     if stats.accounts_failed:
         print(f"accounts failed: {', '.join(stats.accounts_failed)}", file=sys.stderr)
         return 1
+    return 0
+
+
+def _login_url(app: App) -> str:
+    from mailwarden.delivery.dashboard.auth import issue_login_code
+
+    return f"{app.dashboard_url()}/login?code={issue_login_code(app.secrets, app.user_id)}"
+
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    from mailwarden.delivery.dashboard.server import serve
+
+    app = build_app()
+    web = app.dashboard_app()
+    if not args.quiet:
+        url = _login_url(app)
+        print(f"mailwarden dashboard on {app.dashboard_url()}")
+        print(f"One-time sign-in link (valid 10 minutes, single use):\n{url}")
+        if args.open:
+            webbrowser.open(url)
+    serve(web, host=app.settings.dashboard.host, port=app.settings.dashboard.port)
+    return 0
+
+
+def cmd_open(args: argparse.Namespace) -> int:
+    app = build_app()
+    url = _login_url(app)
+    if args.print_only:
+        print(url)
+    else:
+        webbrowser.open(url)
+        print(f"Opened a one-time sign-in link for {app.dashboard_url()} (valid 10 minutes).")
+    return 0
+
+
+def cmd_digest(args: argparse.Namespace) -> int:
+    from mailwarden.core.digest_job import run_digest
+
+    app = build_app()
+    repo = app.repository()
+    try:
+        d = run_digest(repo, app.user_id, now=dt.datetime.now(dt.UTC), sink=app.digest_sink())
+    finally:
+        repo.close()
+    sections = ", ".join(f"{k} {len(v)}" for k, v in d.sections.items()) or "no new mail"
+    print(f"digest: {d.urgent} urgent, {sections}, {sum(d.sensitive_by_sender.values())} sensitive, {d.ignored} ignored")
+    if app.settings.digest.markdown_dir:
+        print(f"Markdown copy written to {Path(app.settings.digest.markdown_dir).expanduser()}")
+    return 0
+
+
+def cmd_schedule(args: argparse.Namespace) -> int:
+    from mailwarden.schedule import GENERATORS, current_platform
+    from mailwarden.security.fs import ensure_private_dir
+
+    app = build_app()
+    platform = args.platform or current_platform()
+    generate, instructions = GENERATORS[platform]
+    out = app.home / "schedule" / platform
+    ensure_private_dir(out)
+    ensure_private_dir(app.home / "logs")
+    for f in generate(app.home, sys.executable, app.settings.digest.times):
+        (out / f.name).write_bytes(f.content)
+        print(f"wrote {out / f.name}")
+    print("\nReview the files, then install them with:\n")
+    print(instructions(out))
     return 0
 
 
@@ -245,17 +315,12 @@ def cmd_promote(args: argparse.Namespace) -> int:
     return 0
 
 
-def _not_yet(phase: int):
-    def run(args: argparse.Namespace) -> int:
-        raise UsageError(f"`{args.command}` is implemented in phase {phase}")
-
-    return run
-
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="mailwarden", description=__doc__)
     p.add_argument("--version", action="version", version=__version__)
     p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("-q", "--quiet", action="store_true", help="warnings and errors only (for scheduled jobs)")
     sub = p.add_subparsers(dest="command", required=True)
 
     i = sub.add_parser("init", help="create the config dir and default config")
@@ -283,8 +348,16 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("set-groq-key", help="store the Groq API key in the OS keyring (hidden input)").set_defaults(
         func=cmd_set_groq_key
     )
-    sub.add_parser("digest").set_defaults(func=_not_yet(4))
-    sub.add_parser("dashboard").set_defaults(func=_not_yet(4))
+    sub.add_parser("digest", help="build the digest now (stored; optional Markdown copy)").set_defaults(func=cmd_digest)
+    db = sub.add_parser("dashboard", help="start the local dashboard on 127.0.0.1")
+    db.add_argument("--open", action="store_true", help="open the one-time sign-in link in your browser")
+    db.set_defaults(func=cmd_dashboard)
+    op = sub.add_parser("open", help="open a one-time sign-in link to the running dashboard")
+    op.add_argument("--print-only", action="store_true", help="print the link instead of opening it")
+    op.set_defaults(func=cmd_open)
+    sc = sub.add_parser("schedule", help="generate launchd / systemd / Task Scheduler files")
+    sc.add_argument("--platform", choices=["macos", "linux", "windows"])
+    sc.set_defaults(func=cmd_schedule)
     dr = sub.add_parser("dry-run", help="show tiers, gate decisions and redacted LLM text; sends/stores nothing")
     dr.add_argument("--last", type=int, default=50, help="messages per account (default 50)")
     dr.add_argument("--account", help="only this account")
@@ -301,10 +374,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    install_logging(logging.DEBUG if args.verbose else logging.INFO)
+    install_logging(logging.DEBUG if args.verbose else logging.WARNING if args.quiet else logging.INFO)
     try:
         return args.func(args)
-    except (UsageError, ConfigError, RulesError, StoreError, BackendError, InsecurePermissions, InsecureKeyringError, EgressBlocked, ProviderError, ValueError) as e:
+    except (UsageError, ConfigError, RulesError, StoreError, BackendError, UnsafeBind, InsecurePermissions, InsecureKeyringError, EgressBlocked, ProviderError, ValueError) as e:
         print(f"mailwarden: {scrub(str(e))}", file=sys.stderr)
         return 2
     except RequestException as e:

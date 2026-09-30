@@ -41,3 +41,20 @@ max_messages_per_run = 200
 
 [outlook]
 enabled = false
+
+[dashboard]
+# Loopback only; any other value is refused.
+host = "127.0.0.1"
+port = 8765
+
+[notifications]
+enabled = true
+# auto | terminal-notifier | osascript | desktop-notifier | none
+# macOS: `brew install terminal-notifier` so clicking a notification opens the entry.
+backend = "auto"
+
+[digest]
+# Local times the scheduled digest runs.
+times = ["08:00", "18:00"]
+# Optional Markdown copy of each digest, e.g. "~/Documents/mailwarden-digests". Empty = off.
+markdown_dir = ""

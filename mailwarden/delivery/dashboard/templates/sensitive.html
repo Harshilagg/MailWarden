@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Sensitive · mailwarden{% endblock %}
+{% block content %}
+<h1>Sensitive <span class="count">{{ total }}</span></h1>
+<p class="lead">These were never sent to any AI and their contents are not stored. Only the sender name and time are kept.</p>
+{% if not counts %}<p class="empty">No sensitive email so far.</p>{% endif %}
+<table class="counts">
+  <thead><tr><th>Sender</th><th>Emails</th></tr></thead>
+  <tbody>{% for name, count in counts %}<tr><td>{{ name }}</td><td>{{ count }}</td></tr>{% endfor %}</tbody>
+</table>
+{% endblock %}

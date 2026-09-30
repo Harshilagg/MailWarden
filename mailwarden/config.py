@@ -75,6 +75,44 @@ class OutlookSettings(_Section):
     enabled: bool = False
 
 
+class DashboardSettings(_Section):
+    host: str = "127.0.0.1"
+    port: int = Field(default=8765, ge=1024, le=65535)
+
+    @field_validator("host")
+    @classmethod
+    def _loopback_only(cls, v: str) -> str:
+        if v != "127.0.0.1":
+            raise ValueError("dashboard.host must be 127.0.0.1 (the dashboard never listens on other interfaces)")
+        return v
+
+
+class NotificationSettings(_Section):
+    enabled: bool = True
+    # auto: macOS -> terminal-notifier if installed (click opens the dashboard entry),
+    #       else osascript (no click action); Linux/Windows -> desktop-notifier.
+    backend: Literal["auto", "terminal-notifier", "osascript", "desktop-notifier", "none"] = "auto"
+    # desktop-notifier only: keep the process alive this long so a click can open the dashboard.
+    click_wait_seconds: float = Field(default=0, ge=0, le=600)
+
+
+class DigestSettings(_Section):
+    times: list[str] = ["08:00", "18:00"]
+    # Optional folder for a Markdown copy of each digest (created 0700, files 0600). Empty = off.
+    markdown_dir: str = ""
+
+    @field_validator("times")
+    @classmethod
+    def _hhmm(cls, v: list[str]) -> list[str]:
+        for t in v:
+            h, _, m = t.partition(":")
+            if not (h.isdigit() and m.isdigit() and 0 <= int(h) <= 23 and 0 <= int(m) <= 59 and len(m) == 2):
+                raise ValueError(f"digest time {t!r} must be HH:MM")
+        if not v:
+            raise ValueError("at least one digest time is required")
+        return v
+
+
 class Settings(_Section):
     user_id: str = Field(default="local", pattern=SLUG_PATTERN)
     llm: LLMSettings = LLMSettings()
@@ -82,6 +120,9 @@ class Settings(_Section):
     groq: GroqSettings = GroqSettings()
     gmail: GmailSettings = GmailSettings()
     outlook: OutlookSettings = OutlookSettings()
+    dashboard: DashboardSettings = DashboardSettings()
+    notifications: NotificationSettings = NotificationSettings()
+    digest: DigestSettings = DigestSettings()
 
     @model_validator(mode="after")
     def _groq_opt_in(self) -> Settings:

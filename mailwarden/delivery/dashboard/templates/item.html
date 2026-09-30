@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Email · mailwarden{% endblock %}
+{% block content %}
+{% if meta is none %}
+<h1>Not found</h1><p class="empty">This email isn't in mailwarden (it may belong to a removed account).</p>
+{% elif urgent %}
+<h1>Job email</h1>
+{% set i = urgent %}{% set overdue = false %}
+{% include "_card.html" %}
+{% elif meta.gate == "sensitive" %}
+<h1>Sensitive email</h1>
+<article class="card held"><p class="summary">From {{ meta.sender_name or "an unknown sender" }} · {{ meta.received_at|ago }}. Not processed: {{ meta.held_reason or "held back as sensitive" }}.</p>
+{% if gmail %}<a class="button" href="{{ gmail }}" target="_blank" rel="noopener noreferrer">Open in Gmail</a>{% endif %}</article>
+{% else %}
+<h1>Email</h1>
+<article class="card"><p class="summary">{{ meta.classification.summary if meta.classification else "Not classified." }}</p>
+<p class="meta">{{ meta.sender_name }} · {{ meta.received_at|ago }}</p>
+{% if gmail %}<a class="button" href="{{ gmail }}" target="_blank" rel="noopener noreferrer">Open in Gmail</a>{% endif %}</article>
+{% endif %}
+{% endblock %}

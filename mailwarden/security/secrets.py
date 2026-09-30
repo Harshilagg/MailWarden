@@ -67,6 +67,10 @@ class SecretKeys:
         return f"{user_id}/dashboard-token"
 
     @staticmethod
+    def dashboard_login(user_id: str) -> str:
+        return f"{user_id}/dashboard-login-code"
+
+    @staticmethod
     def groq_api_key(user_id: str) -> str:
         return f"{user_id}/groq-api-key"
 

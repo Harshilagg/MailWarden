@@ -1,0 +1,62 @@
+:root {
+  --bg: #f7f7f5; --fg: #1d1d1f; --muted: #6b6b70; --card: #ffffff; --line: #e4e4e0;
+  --accent: #2f5bd3; --warn: #b3261e; --held: #fff6e0; --held-line: #f0c36d;
+  --applied: #e8eefc; --assessment: #efe7fb; --interview: #e3f5ea; --offer: #daf2d2; --rejection: #f6e4e4; --other: #ececec;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161618; --fg: #ececee; --muted: #a0a0a8; --card: #212124; --line: #333338;
+    --accent: #8fb0ff; --warn: #ff8a80; --held: #2e2716; --held-line: #7a6228;
+    --applied: #25304a; --assessment: #33294a; --interview: #203a2a; --offer: #22401f; --rejection: #45292a; --other: #333;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+.top { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--card); }
+.brand { font-weight: 700; }
+nav { display: flex; gap: 4px; flex-wrap: wrap; flex: 1; }
+nav a { color: var(--muted); text-decoration: none; padding: 4px 10px; border-radius: 6px; }
+nav a[aria-current="page"] { color: var(--fg); background: var(--bg); font-weight: 600; }
+main { max-width: 980px; margin: 0 auto; padding: 16px; }
+main.narrow { max-width: 520px; padding-top: 60px; }
+h1 { font-size: 1.5rem; margin: 8px 0; }
+h2 { font-size: 1.05rem; margin: 18px 0 8px; display: inline; }
+h3 { font-size: 1rem; margin: 0; }
+.lead { color: var(--muted); margin-top: 0; }
+.empty { color: var(--muted); padding: 24px 0; }
+.count { color: var(--muted); font-weight: 400; font-size: .9em; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 10px 0; }
+.card.held { background: var(--held); border-color: var(--held-line); }
+.card.compact { padding: 10px 12px; }
+.card-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: baseline; }
+.card-foot { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
+.summary { margin: 6px 0; }
+.meta, .role { color: var(--muted); font-size: .9em; margin: 2px 0; }
+.due { font-weight: 600; }
+.due.overdue { color: var(--warn); }
+.pill { display: inline-block; font-size: .78em; font-weight: 600; padding: 1px 8px; border-radius: 999px; background: var(--other); vertical-align: middle; }
+.stage-applied { background: var(--applied); } .stage-assessment { background: var(--assessment); }
+.stage-interview { background: var(--interview); } .stage-offer { background: var(--offer); }
+.stage-rejection { background: var(--rejection); }
+.actions { display: flex; gap: 8px; align-items: center; }
+.button, button { font: inherit; font-size: .9em; padding: 5px 12px; border-radius: 7px; border: 1px solid var(--accent); background: var(--accent); color: #fff; text-decoration: none; cursor: pointer; }
+button.secondary { background: transparent; color: var(--accent); }
+button.link { background: none; border: none; color: var(--muted); padding: 4px; }
+form.inline { display: inline; margin: 0; }
+.board { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.column h2 { display: block; }
+.history { margin: 6px 0 0; padding-left: 18px; }
+details summary { cursor: pointer; }
+details summary h2 { display: inline; }
+.digest-section { margin: 14px 0; }
+.entries { list-style: none; padding: 0; margin: 6px 0; }
+.entries li { padding: 7px 0; border-bottom: 1px solid var(--line); }
+.sender { font-weight: 600; margin-right: 6px; }
+table.counts { border-collapse: collapse; width: 100%; max-width: 520px; }
+.counts th, .counts td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+ul.plain { list-style: none; padding: 0; }
+ul.cols { columns: 2 220px; }
+code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
+pre { background: var(--card); border: 1px solid var(--line); padding: 10px; border-radius: 8px; }
+a { color: var(--accent); }
+@media (max-width: 560px) { main { padding: 12px; } .card-foot { flex-direction: column; align-items: flex-start; } }

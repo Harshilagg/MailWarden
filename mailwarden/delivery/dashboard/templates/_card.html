@@ -1,0 +1,22 @@
+{# expects: i (UrgentItem), gmail (url|None), overdue (bool) #}
+<article class="card{% if i.held %} held{% endif %}">
+  <div class="card-head">
+    <h3>{{ i.company or "Job email" }}{% if i.stage %} <span class="pill stage-{{ i.stage }}">{{ i.stage|stage }}</span>{% endif %}</h3>
+    {% if i.deadline %}<span class="due{% if overdue %} overdue{% endif %}">{% if overdue %}Was due{% else %}Due{% endif %} {{ i.deadline|short_date }}</span>{% endif %}
+  </div>
+  {% if i.held %}
+  <p class="summary">Needs your attention. Not processed: {{ i.held_reason or "held back as sensitive" }}. Open it in Gmail to read it.</p>
+  {% else %}
+  <p class="summary">{{ i.summary }}</p>
+  {% endif %}
+  <div class="card-foot">
+    <span class="meta">{{ i.sender_name }} · {{ i.received_at|ago }}</span>
+    <span class="actions">
+      {% if gmail %}<a class="button" href="{{ gmail }}" target="_blank" rel="noopener noreferrer">Open in Gmail</a>{% endif %}
+      <form method="post" action="/i/{{ i.account }}/{{ i.message_id }}/dismiss" class="inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button class="secondary">Done</button>
+      </form>
+    </span>
+  </div>
+</article>

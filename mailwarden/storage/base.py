@@ -63,6 +63,21 @@ class Repository(ABC):
     @abstractmethod
     def list_email_meta(self, user_id: str, since: dt.datetime | None = None) -> list[EmailMeta]: ...
 
+    @abstractmethod
+    def get_email_meta(self, user_id: str, account: str, message_id: str) -> EmailMeta | None: ...
+
+    @abstractmethod
+    def dismiss(self, user_id: str, account: str, message_id: str) -> bool:
+        """Mark an urgent item as handled. Returns False if no such message."""
+
+    # digests
+    @abstractmethod
+    def save_digest(self, user_id: str, generated_at: dt.datetime, period_start: dt.datetime, body_json: str) -> None: ...
+
+    @abstractmethod
+    def latest_digest(self, user_id: str) -> tuple[dt.datetime, dt.datetime, str] | None:
+        """(generated_at, period_start, body_json) of the newest digest."""
+
     # applications
     @abstractmethod
     def find_application(self, user_id: str, company_key: str, role_key: str) -> Application | None: ...

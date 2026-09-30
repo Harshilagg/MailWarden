@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Settings · mailwarden{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<p class="lead">Read-only. Edit <code>config.toml</code> and <code>sender_rules.yaml</code> in the mailwarden home folder, or use <code>mailwarden promote</code>.</p>
+<section><h2>Classifier</h2><p>{{ backend }}</p></section>
+<section><h2>Outbound hosts allowed</h2><ul class="plain">{% for h in hosts %}<li><code>{{ h }}</code></li>{% endfor %}</ul></section>
+<section><h2>Accounts</h2><ul class="plain">{% for name, provider, addr in accounts %}<li>{{ name }} · {{ provider }} · {{ addr }}</li>{% endfor %}</ul></section>
+<section><h2>Digest times</h2><p>{{ digest_times|join(", ") }}</p></section>
+<section><h2>Sender tiers</h2>
+{% for tier, lists in tiers.items() %}
+  <details><summary>{{ tier }} <span class="count">{{ lists.domains|length + lists.senders|length }}</span></summary>
+    {% if lists.domains %}<h3>Domains</h3><ul class="plain cols">{% for d in lists.domains %}<li><code>{{ d }}</code></li>{% endfor %}</ul>{% endif %}
+    {% if lists.senders %}<h3>Senders</h3><ul class="plain cols">{% for s in lists.senders %}<li><code>{{ s }}</code></li>{% endfor %}</ul>{% endif %}
+  </details>
+{% endfor %}
+</section>
+{% endblock %}

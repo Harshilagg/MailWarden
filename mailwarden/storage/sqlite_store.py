@@ -29,7 +29,7 @@ from mailwarden.security.fs import check_private, ensure_private_dir
 from mailwarden.security.secrets import SecretKeys, SecretStore
 from mailwarden.storage.base import ApplicationEvent, Repository
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Columns added after v1: (name, SQL type). Applied with ALTER TABLE on open.
 _MESSAGE_COLUMNS_V2 = (
@@ -38,6 +38,7 @@ _MESSAGE_COLUMNS_V2 = (
     ("held_job", "INTEGER NOT NULL DEFAULT 0"),
     ("held_company", "TEXT"),
     ("held_stage", "TEXT"),
+    ("dismissed_at", "TEXT"),
 )
 
 _SCHEMA = """
@@ -86,6 +87,14 @@ CREATE TABLE IF NOT EXISTS applications (
     domains TEXT NOT NULL DEFAULT '[]',
     UNIQUE (user_id, company_key, role_key)
 );
+CREATE TABLE IF NOT EXISTS digests (
+    id INTEGER PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    generated_at TEXT NOT NULL,
+    period_start TEXT NOT NULL,
+    body_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS digests_user ON digests (user_id, generated_at);
 CREATE TABLE IF NOT EXISTS application_events (
     user_id TEXT NOT NULL,
     application_id INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
@@ -131,6 +140,7 @@ class SQLCipherRepository(Repository):
         except sqlcipher3.DatabaseError:
             raise StoreError("cannot decrypt the database (wrong or missing key in keyring)") from None
         self._db.execute("PRAGMA foreign_keys = ON")
+        self._db.execute("PRAGMA busy_timeout = 5000")  # dashboard and scheduled runs share the file
         self._db.execute("PRAGMA secure_delete = ON")
         self._db.executescript(_SCHEMA)
         self._migrate()
@@ -251,16 +261,19 @@ class SQLCipherRepository(Repository):
         return [r[0] for r in rows]
 
     def list_email_meta(self, user_id: str, since: dt.datetime | None = None) -> list[EmailMeta]:
+        if since is None:
+            return self._list(user_id, "", [])
+        return self._list(user_id, "AND received_at >= ?", [_iso(since)])
+
+    def _list(self, user_id: str, where: str, extra: list[object]) -> list[EmailMeta]:
         sql = (
             "SELECT account, message_id, status, sender_address, sender_name, received_at, tier, gate, "
             "category, company, role, stage, action_required, deadline, summary, "
-            "classified_by, held_reason, held_job, held_company, held_stage "
+            "classified_by, held_reason, held_job, held_company, held_stage, dismissed_at "
             "FROM messages WHERE user_id = ? AND status != 'pending'"
         )
-        args: list[object] = [user_id]
-        if since is not None:
-            sql += " AND received_at >= ?"
-            args.append(_iso(since))
+        sql += " " + where
+        args: list[object] = [user_id, *extra]
         out = []
         for r in self._db.execute(sql + " ORDER BY received_at DESC", args).fetchall():
             classification = None
@@ -279,10 +292,46 @@ class SQLCipherRepository(Repository):
                     sender_address=r[3], sender_name=r[4] or "", received_at=dt.datetime.fromisoformat(r[5]),
                     tier=Tier(r[6]), gate=GateDecision(r[7]), classification=classification,
                     classified_by=r[15], held_reason=r[16], held_job=bool(r[17]), held_company=r[18],
-                    held_stage=Stage(r[19]) if r[19] else None,
+                    held_stage=Stage(r[19]) if r[19] else None, dismissed=r[20] is not None,
                 )
             )
         return out
+
+    def get_email_meta(self, user_id: str, account: str, message_id: str) -> EmailMeta | None:
+        for meta in self._list(user_id, "AND account = ? AND message_id = ?", [account, message_id]):
+            return meta
+        return None
+
+    def dismiss(self, user_id: str, account: str, message_id: str) -> bool:
+        cur = self._db.execute(
+            "UPDATE messages SET dismissed_at = ? WHERE user_id = ? AND account = ? AND message_id = ?",
+            (_now(), user_id, account, message_id),
+        )
+        return cur.rowcount > 0
+
+    # -- digests ------------------------------------------------------------
+
+    def save_digest(self, user_id: str, generated_at: dt.datetime, period_start: dt.datetime, body_json: str) -> None:
+        self._db.execute(
+            "INSERT INTO digests (user_id, generated_at, period_start, body_json) VALUES (?, ?, ?, ?)",
+            (user_id, _iso(generated_at), _iso(period_start), body_json),
+        )
+        # Keep a bounded history.
+        self._db.execute(
+            "DELETE FROM digests WHERE user_id = ? AND id NOT IN "
+            "(SELECT id FROM digests WHERE user_id = ? ORDER BY generated_at DESC LIMIT 60)",
+            (user_id, user_id),
+        )
+
+    def latest_digest(self, user_id: str) -> tuple[dt.datetime, dt.datetime, str] | None:
+        row = self._db.execute(
+            "SELECT generated_at, period_start, body_json FROM digests WHERE user_id = ? "
+            "ORDER BY generated_at DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return dt.datetime.fromisoformat(row[0]), dt.datetime.fromisoformat(row[1]), row[2]
 
     # -- applications -------------------------------------------------------
 
@@ -389,6 +438,8 @@ class SQLCipherRepository(Repository):
         try:
             self._db.execute("DELETE FROM messages WHERE user_id = ? AND account = ?", (user_id, account))
             self._db.execute("DELETE FROM sync_state WHERE user_id = ? AND account = ?", (user_id, account))
+            # Digests summarise all accounts; drop them rather than keep stale content.
+            self._db.execute("DELETE FROM digests WHERE user_id = ?", (user_id,))
             self._db.execute(
                 "DELETE FROM application_events WHERE user_id = ? AND account = ?", (user_id, account)
             )
