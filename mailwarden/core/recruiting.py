@@ -29,6 +29,11 @@ JOB_BOARD_DOMAINS = frozenset(
     {"linkedin.com", "indeed.com", "naukri.com", "foundit.in", "monsterindia.com", "internshala.com", "glassdoor.com",
      "monster.com", "shine.com", "apna.co", "wellfound.com", "instahyre.com", "cutshort.io"}
 )
+ASSESSMENT_DOMAINS = frozenset({
+    "hackerrank.com", "hackerrankforwork.com", "hackerearth.com", "codesignal.com", "codility.com", "mettl.com",
+    "testgorilla.com", "hirevue.com", "hirepro.in", "imocha.io", "karat.io", "coderbyte.com", "interviewbit.com",
+    "myamcat.com", "cocubes.com", "talview.com", "glider.ai", "unstop.com",
+})
 # Platforms whose domain says nothing about the hiring company.
 PLATFORM_DOMAINS = JOB_BOARD_DOMAINS | frozenset(
     {"greenhouse.io", "greenhouse-mail.io", "lever.co", "ashbyhq.com", "myworkdayjobs.com", "myworkday.com",

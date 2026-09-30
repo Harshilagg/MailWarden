@@ -302,7 +302,7 @@ def cmd_regate(args: argparse.Namespace) -> int:
         rules = app.rules().with_priority_domains(repo.application_domains(app.user_id))
         pipeline = Pipeline(rules, max_body_chars=app.settings.llm.max_body_chars)
         report = run_regate(repo, app.user_id, accounts, app.provider_for, pipeline, days=args.days,
-                            now=dt.datetime.now(dt.UTC))
+                            now=dt.datetime.now(dt.UTC), force_ids=set(args.message or []))
         print_regate(report, sys.stdout, applied=args.apply)
         if args.apply and report.to_reprocess:
             llm = app.llm_backend()
@@ -318,7 +318,8 @@ def cmd_regate(args: argparse.Namespace) -> int:
                 total += stats.new
                 print(f"reprocessed {stats.new} in {name}: {stats.classified} by LLM, {stats.rule_classified} by rule, "
                       f"{stats.sensitive} held ({stats.held_jobs} surfaced as job mail), "
-                      f"{stats.jobs_new} new jobs extracted, {stats.pending} pending")
+                      f"{stats.jobs_new} new jobs extracted, {stats.pending} pending; "
+                      f"{stats.urgent_kept} kept in Urgent (pinned), {stats.safety_net} corrected to job mail")
             print("(re-processing never sends notifications)")
     finally:
         repo.close()
@@ -403,6 +404,7 @@ def build_parser() -> argparse.ArgumentParser:
     rg = sub.add_parser("regate", help="re-check stored mail with the current gate/rules; per-sender breakdown")
     rg.add_argument("--days", type=int, default=7)
     rg.add_argument("--apply", action="store_true", help="reprocess emails whose outcome changed (uses the LLM)")
+    rg.add_argument("--message", action="append", metavar="ID", help="also reprocess this message id (repeatable)")
     rg.set_defaults(func=cmd_regate)
     sc = sub.add_parser("schedule", help="generate launchd / systemd / Task Scheduler files")
     sc.add_argument("--platform", choices=["macos", "linux", "windows"])

@@ -121,7 +121,9 @@ Add `--quiet` before any command for warnings-only output (used by scheduled job
 
 - **Urgent**: job mail that needs you, soonest deadline first, including held-back
   job mail ("Amex · assessment · needs your attention"). Each item has
-  **Open in Gmail** and **Done**.
+  **Open in Gmail** and **Done**. Items are *pinned*: once something is urgent, it
+  leaves only when you click **Done**, even if it is later reclassified
+  (for example by `regate --apply`).
 - **Applications**: a board of companies by stage, with each application's history.
 - **Job alerts**: every job listed in your job-alert emails (LinkedIn, Indeed,
   Naukri, foundit, Internshala, Cutshort, jobs2web job agents ...), one row per job,

@@ -261,3 +261,16 @@ def test_dismiss_job_requires_csrf(env):
     repo = env.repo_factory()
     assert job_id not in [j.id for j in repo.list_jobs("local")]
     repo.close()
+
+
+def test_pinned_item_shows_on_urgent_with_note(env):
+    repo = env.repo_factory()
+    repo.save_email_meta(EmailMeta(
+        user_id="local", account="personal", message_id="pin1", sender_address="events@hackerearth.com",
+        sender_name="HackerEarth", received_at=NOW - dt.timedelta(days=1), tier=Tier.PRIORITY, gate=GateDecision.SAFE,
+        classification=cls(category=Category.NEWSLETTER, company="Booking Holdings", stage=None,
+                           action_required=False, deadline=None, summary="A hiring challenge newsletter."),
+        urgent_since=NOW - dt.timedelta(days=1)))
+    repo.close()
+    html = client(env).get("/").text
+    assert "Booking Holdings" in html and "It stays until you click Done" in html

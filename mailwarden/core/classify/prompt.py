@@ -53,8 +53,10 @@ future date relative to today.
 Fields:
 - category:
   "job": ONLY the user's own applications and hiring processes: application
-    confirmations, assessments, interviews, offers, rejections, and recruiters
-    writing to the user personally about a specific role.
+    confirmations, assessments, interviews, offers, rejections, recruiters
+    writing to the user personally about a specific role, and hiring challenges,
+    coding contests or hackathons run by or for employers (HackerEarth, HackerRank,
+    Unstop, ...) that the user registered for or is invited to (stage "assessment").
   "job_alert": job recommendations, job matches, "jobs you may like", job-board
     and talent-network alerts (LinkedIn, Indeed, Naukri, foundit, company career
     sites), even if they name a role or say "apply".
@@ -68,8 +70,10 @@ Fields:
 - action_required: true only if the user must do something in an ongoing process
   (book a slot, take a test, reply, sign, submit documents). Always false for
   job_alert, newsletters, promotions, discounts, offers to buy something, and
-  event or webinar registrations.
-- deadline: YYYY-MM-DD if a deadline or scheduled date is stated, else null.
+  event or webinar registrations. Hiring challenges and assessments with a
+  registration or submission deadline DO require action.
+- deadline: YYYY-MM-DD if a deadline, last date to register/submit, or scheduled
+  date is stated (e.g. "register by 10 Oct"), else null.
 - summary: ONE plain, natural sentence addressed to the user as "you", at most
   {SUMMARY_MAX_WORDS} words. Write dates like "Tue, 5 Oct". Never include placeholders
   such as [LINK:...], [NUM], [EMAIL], [TOKEN], no URLs, no jargon.

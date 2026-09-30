@@ -160,7 +160,11 @@ class EmailMeta(_Frozen):
     held_job: bool = False
     held_company: str | None = Field(default=None, max_length=200)
     held_stage: Stage | None = None
+    held_deadline: dt.date | None = None
     dismissed: bool = False
+    #: Set the first time the message counts as urgent. Pinned: only the user's "Done"
+    #: (dismissed) removes it from Urgent, even if it is later reclassified.
+    urgent_since: dt.datetime | None = None
 
     @model_validator(mode="after")
     def _sensitive_is_minimal(self) -> EmailMeta:

@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import TextIO
 
 from mailwarden.core.models import Account, EmailMeta, GateDecision, Tier
+from mailwarden.core.overview import is_urgent
 from mailwarden.core.pipeline import Pipeline, Triage
 from mailwarden.core.text import clean
 from mailwarden.providers.base import MailProvider, ProviderError
@@ -74,6 +75,8 @@ class RegateReport:
     held_before: int = 0
     held_after: int = 0
     fetch_errors: int = 0
+    #: Currently urgent messages that will be reprocessed; they stay in Urgent (pinned) regardless.
+    urgent_reprocessed: int = 0
     senders: dict[str, SenderBreakdown] = field(default_factory=dict)
     to_reprocess: dict[str, list[str]] = field(default_factory=lambda: defaultdict(list))
 
@@ -87,8 +90,10 @@ def run_regate(
     *,
     days: int,
     now: dt.datetime,
+    force_ids: set[str] | None = None,
 ) -> RegateReport:
     report = RegateReport()
+    force_ids = force_ids or set()
     by_account = {a.name: a for a in accounts}
     for meta in repo.list_email_meta(user_id, since=now - dt.timedelta(days=days)):
         account = by_account.get(meta.account)
@@ -119,9 +124,11 @@ def run_regate(
                 row.released += 1
             for r in t.gate.waived:
                 row.waived[r] += 1
-            if _changed(old, new):
+            if _changed(old, new) or meta.message_id in force_ids:
                 row.changed += 1
                 report.to_reprocess[account.name].append(meta.message_id)
+                if is_urgent(meta):
+                    report.urgent_reprocessed += 1
         finally:
             msg.discard_content()
     return report
@@ -134,6 +141,9 @@ def print_regate(report: RegateReport, out: TextIO, *, applied: bool) -> None:
     p(f"held before: {report.held_before}   held now: {report.held_after}   outcome changed: {changed}")
     if report.fetch_errors:
         p(f"could not re-fetch: {report.fetch_errors}")
+    if report.urgent_reprocessed:
+        p(f"urgent items affected: {report.urgent_reprocessed} (they stay in Urgent until you click Done, "
+          "whatever the new classification)")
     p("\nper sender:")
     for label, s in sorted(report.senders.items(), key=lambda kv: (-kv[1].total, kv[0].lower())):
         p(f"  {label}  <…@{s.domain}>  ×{s.total}")

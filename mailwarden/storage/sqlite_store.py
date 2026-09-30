@@ -31,7 +31,7 @@ from mailwarden.security.fs import check_private, ensure_private_dir
 from mailwarden.security.secrets import SecretKeys, SecretStore
 from mailwarden.storage.base import ApplicationEvent, Repository
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # Columns added after v1: (name, SQL type). Applied with ALTER TABLE on open.
 _MESSAGE_COLUMNS_V2 = (
@@ -41,6 +41,8 @@ _MESSAGE_COLUMNS_V2 = (
     ("held_company", "TEXT"),
     ("held_stage", "TEXT"),
     ("dismissed_at", "TEXT"),
+    ("urgent_since", "TEXT"),
+    ("held_deadline", "TEXT"),
 )
 
 _SCHEMA = """
@@ -178,11 +180,26 @@ class SQLCipherRepository(Repository):
         for name, sql_type in _MESSAGE_COLUMNS_V2:
             if name not in existing:
                 self._db.execute(f"ALTER TABLE messages ADD COLUMN {name} {sql_type}")
+        if "urgent_since" not in existing:
+            self._pin_currently_urgent()
         self._db.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
             "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             (str(SCHEMA_VERSION),),
         )
+
+    def _pin_currently_urgent(self) -> None:
+        """v5 migration: pin everything that is urgent right now, so nothing drops out later."""
+        from mailwarden.core.overview import urgent_by_rules
+
+        users = [r[0] for r in self._db.execute("SELECT DISTINCT user_id FROM messages")]
+        for user_id in users:
+            for m in self.list_email_meta(user_id):
+                if not m.dismissed and urgent_by_rules(m):
+                    self._db.execute(
+                        "UPDATE messages SET urgent_since = processed_at WHERE user_id = ? AND account = ? AND message_id = ?",
+                        (user_id, m.account, m.message_id),
+                    )
 
     @classmethod
     def open(cls, path: Path, secrets_store: SecretStore, user_id: str) -> SQLCipherRepository:
@@ -231,8 +248,8 @@ class SQLCipherRepository(Repository):
         self._db.execute(
             "INSERT INTO messages (user_id, account, message_id, status, sender_address, sender_name, "
             "received_at, tier, gate, category, company, role, stage, action_required, deadline, summary, processed_at, "
-            "classified_by, held_reason, held_job, held_company, held_stage) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "classified_by, held_reason, held_job, held_company, held_stage, urgent_since, held_deadline, dismissed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (user_id, account, message_id) DO UPDATE SET "
             "status = excluded.status, sender_address = excluded.sender_address, sender_name = excluded.sender_name, "
             "received_at = excluded.received_at, tier = excluded.tier, gate = excluded.gate, "
@@ -240,7 +257,9 @@ class SQLCipherRepository(Repository):
             "action_required = excluded.action_required, deadline = excluded.deadline, summary = excluded.summary, "
             "processed_at = excluded.processed_at, classified_by = excluded.classified_by, "
             "held_reason = excluded.held_reason, held_job = excluded.held_job, "
-            "held_company = excluded.held_company, held_stage = excluded.held_stage "
+            "held_company = excluded.held_company, held_stage = excluded.held_stage, "
+            "urgent_since = COALESCE(messages.urgent_since, excluded.urgent_since), "
+            "held_deadline = excluded.held_deadline, dismissed_at = COALESCE(messages.dismissed_at, excluded.dismissed_at) "
             "WHERE messages.status = 'pending'",
             (
                 meta.user_id,
@@ -265,6 +284,9 @@ class SQLCipherRepository(Repository):
                 int(meta.held_job),
                 meta.held_company if sensitive else None,
                 meta.held_stage.value if sensitive and meta.held_stage else None,
+                _iso(meta.urgent_since) if meta.urgent_since else None,
+                meta.held_deadline.isoformat() if sensitive and meta.held_deadline else None,
+                _now() if meta.dismissed else None,
             ),
         )
 
@@ -293,7 +315,7 @@ class SQLCipherRepository(Repository):
         sql = (
             "SELECT account, message_id, status, sender_address, sender_name, received_at, tier, gate, "
             "category, company, role, stage, action_required, deadline, summary, "
-            "classified_by, held_reason, held_job, held_company, held_stage, dismissed_at "
+            "classified_by, held_reason, held_job, held_company, held_stage, dismissed_at, urgent_since, held_deadline "
             "FROM messages WHERE user_id = ? AND status != 'pending'"
         )
         sql += " " + where
@@ -317,6 +339,8 @@ class SQLCipherRepository(Repository):
                     tier=Tier(r[6]), gate=GateDecision(r[7]), classification=classification,
                     classified_by=r[15], held_reason=r[16], held_job=bool(r[17]), held_company=r[18],
                     held_stage=Stage(r[19]) if r[19] else None, dismissed=r[20] is not None,
+                    urgent_since=dt.datetime.fromisoformat(r[21]) if r[21] else None,
+                    held_deadline=dt.date.fromisoformat(r[22]) if r[22] else None,
                 )
             )
         return out

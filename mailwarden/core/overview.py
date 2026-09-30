@@ -32,17 +32,25 @@ class UrgentItem:
     held: bool
     #: Friendly reason for held-back mail.
     held_reason: str | None
+    #: True if it stays in Urgent only because it was urgent earlier (pinned until Done).
+    pinned: bool = False
 
 
-def is_urgent(m: EmailMeta) -> bool:
-    if m.dismissed:
-        return False
+def urgent_by_rules(m: EmailMeta) -> bool:
+    """Whether the current classification makes the message urgent (ignores pins and Done)."""
     if m.held_job:
         return True
     c = m.classification
     if c is None or c.category is not Category.JOB or c.stage is Stage.REJECTION:
         return False
     return c.action_required or c.stage in ALERT_STAGES
+
+
+def is_urgent(m: EmailMeta) -> bool:
+    """Urgent until the user clicks Done: a pinned item never leaves on its own."""
+    if m.dismissed:
+        return False
+    return m.urgent_since is not None or urgent_by_rules(m)
 
 
 def urgent_items(metas: list[EmailMeta]) -> list[UrgentItem]:
@@ -55,8 +63,8 @@ def urgent_items(metas: list[EmailMeta]) -> list[UrgentItem]:
             UrgentItem(
                 account=m.account, message_id=m.message_id, sender_name=m.sender_name, received_at=m.received_at,
                 company=c.company if c else m.held_company, stage=c.stage if c else m.held_stage,
-                deadline=c.deadline if c else None, summary=c.summary if c else None,
-                held=m.held_job, held_reason=m.held_reason,
+                deadline=(c.deadline if c else None) or m.held_deadline, summary=c.summary if c else None,
+                held=m.held_job, held_reason=m.held_reason, pinned=not urgent_by_rules(m),
             )
         )
     far = dt.date.max

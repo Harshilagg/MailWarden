@@ -9,6 +9,7 @@
   {% else %}
   <p class="summary">{{ i.summary }}</p>
   {% endif %}
+  {% if i.pinned %}<p class="meta">Kept here because it was urgent earlier. It stays until you click Done.</p>{% endif %}
   <div class="card-foot">
     <span class="meta">{{ i.sender_name }} · {{ i.received_at|ago }}</span>
     <span class="actions">
