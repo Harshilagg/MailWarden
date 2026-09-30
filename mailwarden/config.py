@@ -16,10 +16,12 @@ import platformdirs
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from mailwarden.core.models import SLUG_PATTERN
+from mailwarden.core.sender_rules import RulesError, SenderRules
 from mailwarden.security.fs import check_private, ensure_private_dir, write_private
 from mailwarden.security.net import LOCAL_HOSTS
 
 CONFIG_FILE = "config.toml"
+RULES_FILE = "sender_rules.yaml"
 TEMPLATE_FILES = ("config.toml", "sender_rules.yaml")
 
 
@@ -84,16 +86,27 @@ def home_dir() -> Path:
     return Path(override) if override else platformdirs.user_config_path("mailwarden")
 
 
-def init_home(home: Path) -> list[Path]:
-    """Create the home dir (0700) and copy missing config templates (0600)."""
+def _template(name: str) -> str:
+    return resources.files("mailwarden.templates").joinpath(name).read_text("utf-8")
+
+
+def init_home(home: Path, *, reset_rules: bool = False) -> list[Path]:
+    """Create the home dir (0700) and copy missing config templates (0600).
+
+    ``reset_rules`` replaces sender_rules.yaml with the shipped seed, keeping
+    the old file as sender_rules.yaml.bak.
+    """
     ensure_private_dir(home)
     created = []
+    rules = home / RULES_FILE
+    if reset_rules and rules.exists():
+        write_private(home / (RULES_FILE + ".bak"), rules.read_text("utf-8"))
+        rules.unlink()
     for name in TEMPLATE_FILES:
         target = home / name
         if target.exists():
             continue
-        text = resources.files("mailwarden.templates").joinpath(name).read_text("utf-8")
-        write_private(target, text)
+        write_private(target, _template(name))
         created.append(target)
     return created
 
@@ -110,3 +123,14 @@ def load_settings(home: Path) -> Settings:
         return Settings.model_validate(raw)
     except (tomllib.TOMLDecodeError, ValueError) as e:
         raise ConfigError(f"invalid {path}: {e}") from None
+
+
+def load_sender_rules(home: Path) -> SenderRules:
+    path = home / RULES_FILE
+    if not path.exists():
+        raise ConfigError(f"{path} not found; run `mailwarden init`")
+    check_private(path)
+    try:
+        return SenderRules.from_yaml(path.read_text("utf-8"))
+    except RulesError as e:
+        raise ConfigError(f"{path}: {e}") from None

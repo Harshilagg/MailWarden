@@ -66,11 +66,15 @@ def _normalise(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
+class HtmlParseError(ValueError):
+    pass
+
+
 def html_to_text(html: str) -> str:
     parser = _Extractor()
     try:
         parser.feed(html)
         parser.close()
-    except Exception:
-        return ""  # fail closed: no text rather than half-parsed markup
+    except Exception as e:
+        raise HtmlParseError("could not parse HTML body") from e
     return _normalise("".join(parser.parts))

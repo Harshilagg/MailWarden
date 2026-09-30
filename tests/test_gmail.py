@@ -39,7 +39,7 @@ def test_plain_text_preferred_and_attachments_skipped():
             {"mimeType": "text/plain", "filename": "notes.txt", "body": {"data": b64("attached text")}},
         ],
     }
-    assert extract_body(payload) == "Interview on Monday"
+    assert extract_body(payload) == ("Interview on Monday", True)
 
 
 def test_html_fallback_drops_scripts_and_hidden_text():
@@ -63,7 +63,7 @@ def test_charset_respected():
         "headers": [{"name": "Content-Type", "value": 'text/plain; charset="iso-8859-1"'}],
         "body": {"data": data},
     }
-    assert extract_body(payload) == "café"
+    assert extract_body(payload) == ("café", True)
 
 
 def test_parse_message_fields_and_repr_hides_content():

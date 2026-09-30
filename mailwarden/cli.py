@@ -10,8 +10,11 @@ from pathlib import Path
 
 from mailwarden import __version__
 from mailwarden.app import App, build_app
-from mailwarden.config import ConfigError, home_dir, init_home
-from mailwarden.core.models import SLUG_PATTERN, Account, ProviderKind
+from mailwarden.config import RULES_FILE, ConfigError, home_dir, init_home
+from mailwarden.core.models import SLUG_PATTERN, Account, ProviderKind, Tier
+from mailwarden.core.sender_rules import RulesError, SenderRules, normalise_entry, set_entry_tier
+from mailwarden.dryrun import run_dry_run
+from mailwarden.security.fs import check_private, write_private
 from mailwarden.providers.base import ProviderError
 from mailwarden.providers.google_oauth import OAuthClient, revoke, run_loopback_flow
 from mailwarden.security.fs import InsecurePermissions
@@ -33,8 +36,10 @@ def _mask(address: str) -> str:
 
 def cmd_init(args: argparse.Namespace) -> int:
     home = home_dir()
-    created = init_home(home)
+    created = init_home(home, reset_rules=args.reset_rules)
     print(f"mailwarden home: {home}")
+    if args.reset_rules:
+        print(f"  previous rules (if any) saved as {RULES_FILE}.bak")
     for p in created:
         print(f"  created {p.name} (mode 600)")
     if not created:
@@ -122,6 +127,46 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+def cmd_dry_run(args: argparse.Namespace) -> int:
+    if args.with_llm:
+        raise UsageError("--with-llm arrives in phase 3; without it nothing is sent to any LLM")
+    if not 1 <= args.last <= 500:
+        raise UsageError("--last must be between 1 and 500")
+    app = build_app()
+    accounts = app.accounts.list(app.user_id)
+    if args.account:
+        accounts = [a for a in accounts if a.name == args.account]
+        if not accounts:
+            raise UsageError(f"no account named {args.account!r}")
+    if not accounts:
+        raise UsageError("no accounts; run add-account first")
+    run_dry_run(accounts, app.provider_for, app.pipeline(), last=args.last, out=sys.stdout, summary_only=args.summary)
+    return 0
+
+
+def cmd_promote(args: argparse.Namespace) -> int:
+    tier = Tier(args.tier)
+    entry = normalise_entry(args.sender)
+    path = home_dir() / RULES_FILE
+    check_private(path)
+    text = path.read_text("utf-8")
+    current = SenderRules.from_yaml(text).tier_of_entry(entry)
+    if current == tier:
+        print(f"{entry} is already {tier}")
+        return 0
+    if current == Tier.SENSITIVE and not args.yes:
+        answer = input(
+            f"{entry} is SENSITIVE. Moving it to {tier} lets its mail reach the LLM when the "
+            "content gate passes it. Type 'yes' to continue: "
+        )
+        if answer.strip().lower() != "yes":
+            print("unchanged")
+            return 1
+    write_private(path, set_entry_tier(text, entry, tier))
+    print(f"{entry}: {current} -> {tier}")
+    return 0
+
+
 def _not_yet(phase: int):
     def run(args: argparse.Namespace) -> int:
         raise UsageError(f"`{args.command}` is implemented in phase {phase}")
@@ -135,7 +180,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("init", help="create the config dir and default config").set_defaults(func=cmd_init)
+    i = sub.add_parser("init", help="create the config dir and default config")
+    i.add_argument("--reset-rules", action="store_true", help="replace sender_rules.yaml with the shipped seed (backup kept)")
+    i.set_defaults(func=cmd_init)
 
     a = sub.add_parser("add-account", help="authorise a mailbox (read-only)")
     a.add_argument("--provider", choices=[k.value for k in ProviderKind], required=True)
@@ -156,14 +203,17 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("run").set_defaults(func=_not_yet(3))
     sub.add_parser("digest").set_defaults(func=_not_yet(4))
     sub.add_parser("dashboard").set_defaults(func=_not_yet(4))
-    dr = sub.add_parser("dry-run")
-    dr.add_argument("--last", type=int, default=50)
-    dr.add_argument("--with-llm", action="store_true")
-    dr.set_defaults(func=_not_yet(2))
-    pr = sub.add_parser("promote")
-    pr.add_argument("sender")
-    pr.add_argument("tier")
-    pr.set_defaults(func=_not_yet(2))
+    dr = sub.add_parser("dry-run", help="show tiers, gate decisions and redacted LLM text; sends/stores nothing")
+    dr.add_argument("--last", type=int, default=50, help="messages per account (default 50)")
+    dr.add_argument("--account", help="only this account")
+    dr.add_argument("--summary", action="store_true", help="print only the summary, no message text")
+    dr.add_argument("--with-llm", action="store_true", help="also classify SAFE mail (phase 3)")
+    dr.set_defaults(func=cmd_dry_run)
+    pr = sub.add_parser("promote", help="move a sender address or domain to a tier")
+    pr.add_argument("sender", help="address (a@b.com) or domain (b.com)")
+    pr.add_argument("tier", choices=["priority", "sensitive", "ignore", "default"])
+    pr.add_argument("--yes", action="store_true", help="skip confirmation when demoting a SENSITIVE sender")
+    pr.set_defaults(func=cmd_promote)
     return p
 
 
@@ -172,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
     install_logging(logging.DEBUG if args.verbose else logging.INFO)
     try:
         return args.func(args)
-    except (UsageError, ConfigError, InsecurePermissions, InsecureKeyringError, EgressBlocked, ProviderError, ValueError) as e:
+    except (UsageError, ConfigError, RulesError, InsecurePermissions, InsecureKeyringError, EgressBlocked, ProviderError, ValueError) as e:
         print(f"mailwarden: {scrub(str(e))}", file=sys.stderr)
         return 2
     except RequestException as e:

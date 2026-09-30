@@ -5,8 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from mailwarden.config import Settings, home_dir, load_settings
+from mailwarden.config import Settings, home_dir, load_sender_rules, load_settings
 from mailwarden.core.models import Account, ProviderKind
+from mailwarden.core.pipeline import Pipeline
 from mailwarden.providers.base import MailProvider, ProviderError
 from mailwarden.providers.gmail import GmailProvider
 from mailwarden.providers.google_oauth import GoogleCredentials, OAuthClient
@@ -42,6 +43,11 @@ class App:
         if not refresh:
             raise ProviderError(f"no stored token for account {account.name!r}; run add-account")
         return GoogleCredentials(self.google_client(), refresh, self.session)
+
+    def pipeline(self) -> Pipeline:
+        """Pipeline with no LLM attached (phase 2); backends are wired in phase 3."""
+        rules = load_sender_rules(self.home)
+        return Pipeline(rules, max_body_chars=self.settings.llm.max_body_chars)
 
     def provider_for(self, account: Account) -> MailProvider:
         try:

@@ -35,5 +35,9 @@ class MailProvider(ABC):
         """Return ids of messages newer than ``cursor`` (or a recent window if None)."""
 
     @abstractmethod
+    def list_recent(self, account: Account, limit: int) -> list[str]:
+        """Ids of the most recent ``limit`` messages, ignoring any cursor."""
+
+    @abstractmethod
     def get_message(self, account: Account, message_id: str) -> FetchedMessage:
         """Fetch headers and text body. Never downloads attachment content."""

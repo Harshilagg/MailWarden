@@ -26,6 +26,36 @@ table and the code disagree.
 
 No telemetry, analytics or update checks exist.
 
+## The sensitivity gate
+
+Before any LLM is involved, every message goes through a purely local gate
+(`mailwarden/core/sensitivity_gate.py`). It marks mail SENSITIVE if the sender
+is in the SENSITIVE tier, or if the sender name, subject or body match patterns
+for OTPs and verification codes, 2FA, "do not share", password resets, login
+and new-device alerts, transactions, debits and credits, statements, UPI, IFSC,
+account and card numbers, KYC, PAN, Aadhaar, tax and government IDs. Text is
+normalised first (NFKC, zero-width and bidi characters removed, Cyrillic and
+Greek look-alikes folded) to defeat obfuscation.
+
+It fails closed. A gate error, a sender-rules error, a redaction error, an
+unparseable body or an unparseable sender all count as SENSITIVE.
+
+SENSITIVE mail is never passed to any LLM, and its body and subject are never
+stored or displayed. The only code path that calls an LLM
+(`Pipeline.classify`) refuses anything not marked SAFE.
+`tests/test_zero_llm_sensitive.py` asserts zero LLM calls and zero network
+calls for a set of realistic Indian bank, UPI, OTP, login-alert, KYC and tax
+emails. It runs on every test run, and a skip is reported as a failure.
+
+## Redaction
+
+SAFE mail is redacted before classification: email addresses, phone numbers,
+every run of 4 or more digits, URLs (reduced to `[LINK:domain]`), and anything
+resembling a token, key, password or ID number are removed. The text is then
+cut to the subject plus the first `llm.max_body_chars` (default 1500)
+characters of the body. The sender's domain is kept; the sender's address
+and name are not. `mailwarden dry-run` prints this exact text.
+
 ## OAuth scopes
 
 - Gmail: exactly `https://www.googleapis.com/auth/gmail.readonly`. Every token

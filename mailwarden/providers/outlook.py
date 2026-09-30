@@ -17,5 +17,8 @@ class OutlookProvider(MailProvider):
     def list_new(self, account: Account, cursor: str | None) -> SyncResult:
         raise NotImplementedError("Outlook support arrives in phase 5")
 
+    def list_recent(self, account: Account, limit: int) -> list[str]:
+        raise NotImplementedError("Outlook support arrives in phase 5")
+
     def get_message(self, account: Account, message_id: str) -> FetchedMessage:
         raise NotImplementedError("Outlook support arrives in phase 5")

@@ -1,4 +1,195 @@
-# Sender tiers. Populated in phase 2.
-priority: []
-sensitive: []
-ignore: []
+# mailwarden sender tiers. Edit freely; must stay chmod 600.
+#
+#   domains: matches the domain AND all its subdomains
+#            (hdfcbank.net also matches alerts.hdfcbank.net)
+#   senders: exact addresses; an address rule beats a domain rule
+#
+# PRIORITY  job mail; still passes the sensitivity gate and redaction.
+# SENSITIVE never sent to any LLM; only sender name/time/account stored.
+# IGNORE    counted in the digest; never classified.
+#
+# An entry may appear in only one tier. Move entries with:
+#   mailwarden promote <address-or-domain> <priority|sensitive|ignore|default>
+
+priority:
+  domains:
+    # Applicant tracking systems
+    - greenhouse.io
+    - greenhouse-mail.io
+    - lever.co
+    - ashbyhq.com
+    - myworkdayjobs.com
+    - myworkday.com
+    - smartrecruiters.com
+    - workable.com
+    - workablemail.com
+    - icims.com
+    - jobvite.com
+    - taleo.net
+    - successfactors.com
+    - successfactors.eu
+    - bamboohr.com
+    - recruitee.com
+    - teamtailor.com
+    - teamtailor-mail.com
+    - applytojob.com
+    - breezy.hr
+    - avature.net
+    - eightfold.ai
+    - zohorecruit.com
+    - zohorecruit.in
+    - freshteam.com
+    - darwinbox.in
+    - wellfound.com
+    - instahyre.com
+    - cutshort.io
+    - joinsuperset.com
+    - unstop.com
+    # Assessment and interview platforms
+    - hackerrank.com
+    - hackerrankforwork.com
+    - codesignal.com
+    - hackerearth.com
+    - codility.com
+    - mettl.com
+    - testgorilla.com
+    - hirevue.com
+    - hirepro.in
+    - imocha.io
+    - karat.io
+    - coderbyte.com
+    - interviewbit.com
+    - myamcat.com
+    - cocubes.com
+    - talview.com
+    - glider.ai
+  senders: []
+
+sensitive:
+  domains:
+    # Indian banks (RBI is moving banks to *.bank.in and NBFCs to *.fin.in)
+    - bank.in
+    - fin.in
+    - hdfcbank.com
+    - hdfcbank.net
+    - icicibank.com
+    - sbi.co.in
+    - onlinesbi.com
+    - sbi.bank.in
+    - axisbank.com
+    - kotak.com
+    - kotakbank.com
+    - yesbank.in
+    - indusind.com
+    - idfcfirstbank.com
+    - pnb.co.in
+    - pnbindia.in
+    - bankofbaroda.com
+    - bankofbaroda.co.in
+    - bankofbaroda.in
+    - canarabank.com
+    - canarabank.in
+    - unionbankofindia.co.in
+    - federalbank.co.in
+    - rblbank.com
+    - aubank.in
+    - bandhanbank.com
+    - idbibank.com
+    - idbi.co.in
+    - bankofindia.co.in
+    - indianbank.in
+    - iob.in
+    - centralbankofindia.co.in
+    - ucobank.com
+    - southindianbank.com
+    - karurvysyabank.co.in
+    - equitasbank.com
+    - ujjivansfb.in
+    - dbs.com
+    - hsbc.co.in
+    - sc.com
+    - citibank.co.in
+    - jupiter.money
+    - fi.money
+    # Card issuers
+    - sbicard.com
+    - americanexpress.com
+    - aexp.com
+    - welcome.aexp.com
+    - getonecard.app
+    - uni.cards
+    - sliceit.com
+    # UPI, payments, wallets
+    - npci.org.in
+    - paytm.com
+    - paytmbank.com
+    - phonepe.com
+    - razorpay.com
+    - cashfree.com
+    - payu.in
+    - mobikwik.com
+    - amazonpay.in
+    - freecharge.in
+    - cred.club
+    - bhimupi.org.in
+    - paypal.com
+    - wise.com
+    # Brokers, depositories, mutual funds
+    - zerodha.com
+    - zerodha.net
+    - groww.in
+    - upstox.com
+    - angelone.in
+    - angelbroking.com
+    - icicidirect.com
+    - hdfcsec.com
+    - kotaksecurities.com
+    - 5paisa.com
+    - dhan.co
+    - smallcase.com
+    - kuvera.in
+    - cdslindia.com
+    - nsdl.co.in
+    - nsdl.com
+    - camsonline.com
+    - kfintech.com
+    - mfcentral.com
+    - nseindia.com
+    - bseindia.com
+    # Insurance and pensions
+    - licindia.in
+    - npscra.nsdl.co.in
+    # Tax and government (gov.in covers incometax.gov.in, uidai.gov.in, epfindia.gov.in, ...)
+    - gov.in
+    - nic.in
+    - protean-tinpan.com
+    - tin-nsdl.com
+    - utiitsl.com
+    - irs.gov
+    # Global banks
+    - chase.com
+    - bankofamerica.com
+    - wellsfargo.com
+    - capitalone.com
+    - discover.com
+    - citi.com
+    - hsbc.com
+    - barclays.co.uk
+    - revolut.com
+    # Account security senders
+    - accounts.google.com
+    - accountprotection.microsoft.com
+    - id.apple.com
+  senders:
+    - payments-noreply@google.com
+    - googlepay-noreply@google.com
+    - security@facebookmail.com
+    - security@mail.instagram.com
+    - account-update@amazon.in
+    - account-update@amazon.com
+    - no-reply@accounts.google.com
+
+ignore:
+  # Senders you never want processed, e.g. - offers.example.com
+  domains: []
+  senders: []

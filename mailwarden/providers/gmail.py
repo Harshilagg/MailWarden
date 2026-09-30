@@ -19,7 +19,7 @@ from typing import Any
 from mailwarden.core.models import Account, FetchedMessage, ProviderKind
 from mailwarden.providers.base import MailProvider, ProviderError, SyncResult
 from mailwarden.providers.google_oauth import GoogleCredentials
-from mailwarden.providers.html_text import html_to_text
+from mailwarden.providers.html_text import HtmlParseError, html_to_text
 from mailwarden.security.net import AllowlistedSession
 
 log = logging.getLogger(__name__)
@@ -70,7 +70,8 @@ def _walk(payload: dict[str, Any]) -> Iterator[dict[str, Any]]:
         stack.extend(part.get("parts") or ())
 
 
-def extract_body(payload: dict[str, Any]) -> str:
+def extract_body(payload: dict[str, Any]) -> tuple[str, bool]:
+    """Return (text, complete). ``complete`` is False if anything failed to decode."""
     plain: list[str] = []
     html: list[str] = []
     for part in _walk(payload):
@@ -85,8 +86,12 @@ def extract_body(payload: dict[str, Any]) -> str:
             plain.append(_decode(data, _charset(part)))
         elif mime == "text/html":
             html.append(_decode(data, _charset(part)))
-    text = "\n".join(plain).strip() if plain else html_to_text("\n".join(html))
-    return text[:_MAX_BODY_CHARS]
+    if plain:
+        return "\n".join(plain).strip()[:_MAX_BODY_CHARS], True
+    try:
+        return html_to_text("\n".join(html))[:_MAX_BODY_CHARS], True
+    except HtmlParseError:
+        return "", False
 
 
 def parse_message(user_id: str, account: str, data: dict[str, Any]) -> FetchedMessage:
@@ -95,6 +100,10 @@ def parse_message(user_id: str, account: str, data: dict[str, Any]) -> FetchedMe
     for h in payload.get("headers") or ():
         headers.setdefault(h.get("name", "").lower(), h.get("value", ""))
     name, address = parseaddr(headers.get("from", ""))
+    try:
+        body, complete = extract_body(payload)
+    except (ValueError, TypeError):  # bad base64 etc.
+        body, complete = "", False
     received = dt.datetime.fromtimestamp(int(data.get("internalDate", "0")) / 1000, tz=dt.UTC)
     return FetchedMessage(
         user_id=user_id,
@@ -104,9 +113,10 @@ def parse_message(user_id: str, account: str, data: dict[str, Any]) -> FetchedMe
         sender_address=address.strip().lower(),
         sender_name=name.strip()[:200],
         subject=headers.get("subject", "")[:1000],
-        body_text=extract_body(payload),
+        body_text=body,
         received_at=received,
         label_ids=tuple(data.get("labelIds") or ()),
+        content_complete=complete,
     )
 
 

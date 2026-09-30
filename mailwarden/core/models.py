@@ -80,6 +80,8 @@ class FetchedMessage(BaseModel):
     body_text: str = Field(repr=False)
     received_at: dt.datetime
     label_ids: tuple[str, ...] = ()
+    #: False if any part of the content could not be parsed (gate fails closed).
+    content_complete: bool = True
 
     @field_validator("received_at")
     @classmethod

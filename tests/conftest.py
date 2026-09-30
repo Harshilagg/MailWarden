@@ -65,3 +65,16 @@ def mount(session: requests.Session, transport: FakeTransport) -> FakeTransport:
 @pytest.fixture
 def secret_store() -> SecretStore:
     return SecretStore(MemoryKeyring())
+
+
+# The zero-LLM-calls suite must never be skipped: a skip is reported as a failure.
+NEVER_SKIP_MODULES = {"test_zero_llm_sensitive"}
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    report = outcome.get_result()
+    if item.module.__name__.rsplit(".", 1)[-1] in NEVER_SKIP_MODULES and report.skipped:
+        report.outcome = "failed"
+        report.longrepr = f"{item.nodeid} is a mandatory safety test and must not be skipped"
