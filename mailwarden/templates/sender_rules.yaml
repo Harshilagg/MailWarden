@@ -212,6 +212,7 @@ job_alert:
     - alert.indeed.com
     - naukri.com
     - foundit.in
+    - monsterindia.com   # foundit's sending domain
     - internshala.com
   senders:
     - jobalerts-noreply@linkedin.com

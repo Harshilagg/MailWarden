@@ -26,7 +26,7 @@ SOCIAL_DOMAINS = frozenset(
     {"instagram.com", "facebookmail.com", "facebook.com", "whatsapp.com", "x.com", "twitter.com", "threads.net"}
 )
 JOB_BOARD_DOMAINS = frozenset(
-    {"linkedin.com", "indeed.com", "naukri.com", "foundit.in", "internshala.com", "glassdoor.com",
+    {"linkedin.com", "indeed.com", "naukri.com", "foundit.in", "monsterindia.com", "internshala.com", "glassdoor.com",
      "monster.com", "shine.com", "apna.co", "wellfound.com", "instahyre.com", "cutshort.io"}
 )
 # Platforms whose domain says nothing about the hiring company.

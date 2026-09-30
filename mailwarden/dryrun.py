@@ -107,7 +107,7 @@ def run_dry_run(
             if triage.gate.sensitive:
                 report.sensitive += 1
                 report.reasons.update(triage.gate.reasons)
-                report.sensitive_by_sender[name] += 1
+                report.sensitive_by_sender[f"{name}  <…@{domain}>"] += 1
                 rules = ", ".join(triage.gate.reasons)
                 held = triage.held_job
                 surfaced = "no"
