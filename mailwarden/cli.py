@@ -127,9 +127,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if notifier is None:
         print("notifications:   off")
     else:
-        if notifier.backend == "osascript":
+        if notifier.backend == "app":
+            print("notifications:   posted as the mailwarden app; clicks open the entry in the app")
+        elif notifier.backend == "osascript":
             print("notifications:   osascript: clicks open Script Editor. "
-                  "Run `brew install terminal-notifier` so clicks open mailwarden.")
+                  "Run `mailwarden launcher` so notifications come from the mailwarden app.")
         else:
             target = "the mailwarden app" if getattr(notifier, "_click_target", "") == "app" else "your browser"
             print(f"notifications:   {notifier.backend}, clicks open {target}")
@@ -280,6 +282,23 @@ def cmd_app(args: argparse.Namespace) -> int:
     from mailwarden.delivery.desktop_app import open_window
 
     open_window(lambda p: _login_url(app, p), socket_path=socket_path, first_path=path)
+    return 0
+
+
+def cmd_notify_post(args: argparse.Namespace) -> int:
+    """Internal: runs inside the app bundle (via mailwarden-notify) to post one notification."""
+    from mailwarden.delivery.app_notify import post
+
+    return 0 if post(args.text, args.path, group=args.group) else 1
+
+
+def cmd_notify_test(args: argparse.Namespace) -> int:
+    app = build_app()
+    notifier = app.notifier()
+    if notifier is None:
+        raise UsageError("notifications are turned off in config.toml")
+    notifier.notify_text("Test notification. Click to open Job alerts.", "/jobs")
+    print(f"Sent a test notification via {notifier.backend}. Clicking it should open Job alerts.")
     return 0
 
 
@@ -456,6 +475,12 @@ def build_parser() -> argparse.ArgumentParser:
     db = sub.add_parser("dashboard", help="start the local dashboard on 127.0.0.1")
     db.add_argument("--open", action="store_true", help="open the one-time sign-in link in your browser")
     db.set_defaults(func=cmd_dashboard)
+    npost = sub.add_parser("notify-post", help=argparse.SUPPRESS)
+    npost.add_argument("--text", required=True)
+    npost.add_argument("--path", default="/")
+    npost.add_argument("--group")
+    npost.set_defaults(func=cmd_notify_post)
+    sub.add_parser("notify-test", help="send a test desktop notification").set_defaults(func=cmd_notify_test)
     ap = sub.add_parser("app", help="open the dashboard in its own window (macOS)")
     ap.add_argument("--path", help="dashboard page to open, e.g. /jobs")
     ap.set_defaults(func=cmd_app)

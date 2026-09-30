@@ -99,11 +99,13 @@ class App:
             return None
         # Clicks open the desktop app (single window) once `mailwarden launcher` has installed it.
         app_installed = sys.platform == "darwin" and (launcher.default_dir() / launcher.APP_NAME).exists()
+        helper = launcher.notify_helper() if sys.platform == "darwin" else None
         logo = resources.files("mailwarden.assets").joinpath("icon-1024.png")
         return DesktopNotifier(backend=n.backend, dashboard_base_url=self.dashboard_url(),
                                click_wait_seconds=n.click_wait_seconds,
                                click_target="app" if app_installed else "browser",
-                               content_image=str(logo) if logo.is_file() else None)
+                               content_image=str(logo) if logo.is_file() else None,
+                               app_helper=str(helper) if helper else None)
 
     def digest_sink(self):
         from mailwarden.delivery.digest_file import MarkdownDigestSink

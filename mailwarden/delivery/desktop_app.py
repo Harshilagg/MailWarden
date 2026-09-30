@@ -96,6 +96,12 @@ def open_window(login_url: Callable[[str], str], *, socket_path: Path, first_pat
     except Exception:
         log.warning("could not register for mailwarden:// links")
     try:
+        from mailwarden.delivery.app_notify import install_click_handler
+
+        install_click_handler(show)
+    except Exception:
+        log.warning("could not register for notification clicks")
+    try:
         serve_app_socket(socket_path, show)
     except OSError:
         log.warning("single-instance hand-off unavailable (socket path too long?)")

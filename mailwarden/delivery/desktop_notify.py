@@ -4,8 +4,11 @@ Content is limited to company, stage and deadline (``JobAlert.title``): never
 a summary, subject or link text. Clicking opens the matching dashboard entry
 (a local 127.0.0.1 URL).
 
-macOS: terminal-notifier (signed; click opens the URL without keeping any
-process alive) when installed, else osascript (no click action).
+macOS, in order of preference:
+- app: posted as the mailwarden app itself (built by `mailwarden launcher`); shows
+  "mailwarden" with its logo, and a click opens the entry in the app window;
+- terminal-notifier, if installed;
+- osascript (macOS attributes these to Script Editor, so a click opens Script Editor).
 Unsigned Python builds (e.g. Homebrew) cannot use desktop-notifier on macOS.
 Linux/Windows: desktop-notifier.
 """
@@ -47,7 +50,9 @@ class DesktopNotifier(Notifier):
         run: Callable[..., Any] = subprocess.run,
         click_target: str = "browser",
         content_image: str | None = None,
+        app_helper: str | None = None,
     ) -> None:
+        self._app_helper = app_helper
         self._base = dashboard_base_url.rstrip("/")
         # "app": clicks open mailwarden:// links, handled by the (single) desktop app window.
         self._click_target = click_target
@@ -61,6 +66,8 @@ class DesktopNotifier(Notifier):
         if backend != "auto":
             return backend
         if platform == "darwin":
+            if self._app_helper:
+                return "app"
             return "terminal-notifier" if self._which("terminal-notifier") else "osascript"
         return "desktop-notifier"
 
@@ -72,15 +79,18 @@ class DesktopNotifier(Notifier):
         return app_link(path) if self._click_target == "app" else f"{self._base}{path}"
 
     def notify(self, alert: JobAlert) -> None:
-        self._send(notification_text(alert), self.url_for(alert), f"mailwarden-{alert.message_id[:40]}")
+        path = f"/i/{alert.account}/{alert.message_id}"
+        self._send(notification_text(alert), self._url(path), f"mailwarden-{alert.message_id[:40]}", path)
 
     def notify_text(self, text: str, dashboard_path: str) -> None:
         text = clean(text).replace("\n", " ").strip().lstrip("-")[:120]
-        self._send(text, self._url(dashboard_path), "mailwarden-notice")
+        self._send(text, self._url(dashboard_path), "mailwarden-notice", safe_local_path(dashboard_path) or "/")
 
-    def _send(self, text: str, url: str, group: str) -> None:
+    def _send(self, text: str, url: str, group: str, path: str = "/") -> None:
         try:
-            if self.backend == "terminal-notifier":
+            if self.backend == "app":
+                self._app_notify(text, path, group)
+            elif self.backend == "terminal-notifier":
                 self._terminal_notifier(text, url, group)
             elif self.backend == "osascript":
                 self._osascript(text)
@@ -88,6 +98,12 @@ class DesktopNotifier(Notifier):
                 self._desktop_notifier(text, url)
         except Exception as e:  # a failed notification must never break a run
             log.warning("desktop notification failed (%s): %s", self.backend, type(e).__name__)
+
+    def _app_notify(self, text: str, path: str, group: str) -> None:
+        if not self._app_helper:
+            raise FileNotFoundError("mailwarden app notification helper")
+        self._run([self._app_helper, "--text", text, "--path", path, "--group", group],
+                  check=False, timeout=30, capture_output=True)
 
     def _terminal_notifier(self, text: str, url: str, group: str) -> None:
         exe = self._which("terminal-notifier")

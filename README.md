@@ -155,11 +155,11 @@ Job mail that needs action (an assessment, interview or offer, or an action for 
 company you're tracking or a priority sender) triggers a desktop notification
 showing only the company, stage and deadline. Clicking it opens the entry on the dashboard.
 
-- **macOS**: `brew install terminal-notifier` (free). Clicking a notification then
-  opens the entry in the mailwarden app (if installed with `mailwarden launcher`) or
-  in your browser. Without terminal-notifier, mailwarden falls back to `osascript`,
-  and macOS attributes those notifications to Script Editor, so clicking one opens
-  Script Editor. `mailwarden doctor` warns about this.
+- **macOS**: after `mailwarden launcher`, notifications are posted by the mailwarden
+  app itself (its name and logo), and clicking one opens the entry in the app window.
+  No extra tools needed; `mailwarden notify-test` sends a test notification. Without
+  the app, mailwarden uses `terminal-notifier` if installed, else `osascript` (macOS
+  attributes those to Script Editor, so a click opens Script Editor).
 - **Linux / Windows**: uses `desktop-notifier`.
 - Configure under `[notifications]` in `config.toml`, or set `enabled = false`.
 

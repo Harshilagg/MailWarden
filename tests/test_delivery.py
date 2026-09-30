@@ -323,3 +323,48 @@ def test_notifier_browser_links_by_default():
     n, rec = notifier()
     n.notify(ALERT)
     assert rec.calls[0][rec.calls[0].index("-open") + 1].startswith("http://127.0.0.1:8765/i/")
+
+
+def test_app_backend_preferred_and_posts_only_path_and_text():
+    rec = Recorder()
+    n = DesktopNotifier(backend="auto", dashboard_base_url="http://127.0.0.1:8765", platform="darwin",
+                        which=lambda name: None, run=rec, click_target="app",
+                        app_helper="/Users/x/Applications/mailwarden.app/Contents/MacOS/mailwarden-notify")
+    assert n.backend == "app"
+    n.notify(ALERT)
+    argv = rec.calls[0]
+    assert argv[0].endswith("mailwarden-notify")
+    assert argv[argv.index("--path") + 1] == "/i/personal/18f0a"
+    assert argv[argv.index("--text") + 1].startswith("Acme · interview")
+    n.notify_text("3 new jobs match your filters", "https://evil.example")  # unsafe path -> "/"
+    assert rec.calls[1][rec.calls[1].index("--path") + 1] == "/"
+
+
+def test_launcher_writes_notify_helper(tmp_path, monkeypatch):
+    import shlex as _shlex
+
+    from mailwarden import launcher
+
+    fake = tmp_path / "Python"
+    fake.write_bytes(b"fake")
+    monkeypatch.setattr(launcher.sys, "platform", "darwin")
+    monkeypatch.setattr(launcher, "framework_interpreter", lambda py: fake)
+    out = tmp_path / "Apps"
+    launcher.build(out, "/v/.venv/bin/python", tmp_path / "home", run=lambda *a, **k: None)
+    helper = launcher.notify_helper(out)
+    assert helper is not None
+    lines = helper.read_text().splitlines()
+    assert _shlex.split(lines[2]) == ["export", "__PYVENV_LAUNCHER__=/v/.venv/bin/python"]
+    assert lines[3] == 'exec "$(dirname "$0")/mailwarden-python" -m mailwarden --quiet notify-post "$@"'
+
+
+def test_notify_post_needs_no_keychain(monkeypatch):
+    """The helper runs as the app; it must not touch secrets (no Keychain prompts)."""
+    import mailwarden.cli as cli
+
+    posted = []
+    monkeypatch.setattr("mailwarden.delivery.app_notify.post",
+                        lambda text, path, group=None: posted.append((text, path)) or True)
+    monkeypatch.setattr(cli, "build_app", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no app/keyring")))
+    assert cli.main(["notify-post", "--text", "Acme · interview", "--path", "/i/p/m1"]) == 0
+    assert posted == [("Acme · interview", "/i/p/m1")]

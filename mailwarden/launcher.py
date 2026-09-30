@@ -32,6 +32,7 @@ _LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/"
 
 
 INTERPRETER = "mailwarden-python"
+NOTIFY_HELPER = "mailwarden-notify"
 
 
 def framework_interpreter(python: str) -> Path | None:
@@ -53,6 +54,22 @@ def executable_script(python: str, home: Path, *, browser: bool = False, bundled
     else:
         lines.append(f"exec {shlex.quote(python)} -m mailwarden --quiet {command}")
     return "\n".join(lines) + "\n"
+
+
+def notify_script(python: str, home: Path) -> str:
+    """Posts one notification *as the app* (bundled interpreter): `mailwarden-notify --text T --path P`."""
+    return (
+        "#!/bin/sh\n"
+        f"export MAILWARDEN_HOME={shlex.quote(str(home))}\n"
+        f"export __PYVENV_LAUNCHER__={shlex.quote(python)}\n"
+        f'exec "$(dirname "$0")/{INTERPRETER}" -m mailwarden --quiet notify-post "$@"\n'
+    )
+
+
+def notify_helper(target_dir: Path | None = None) -> Path | None:
+    """The installed app's notification helper, if the app has been built with one."""
+    helper = (target_dir or default_dir()) / APP_NAME / "Contents" / "MacOS" / NOTIFY_HELPER
+    return helper if helper.is_file() and os.access(helper, os.X_OK) else None
 
 
 def info_plist() -> bytes:
@@ -90,6 +107,10 @@ def build(target_dir: Path, python: str, home: Path, *, browser: bool = False, r
     exe = macos / "mailwarden"
     exe.write_text(executable_script(python, home, browser=browser, bundled=interpreter is not None))
     exe.chmod(0o755)
+    if interpreter is not None:
+        helper = macos / NOTIFY_HELPER
+        helper.write_text(notify_script(python, home))
+        helper.chmod(0o755)
     with resources.as_file(resources.files("mailwarden.assets").joinpath("mailwarden.icns")) as icon:
         shutil.copyfile(icon, res / "mailwarden.icns")
     os.utime(app)

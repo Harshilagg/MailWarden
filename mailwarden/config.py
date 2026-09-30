@@ -89,9 +89,9 @@ class DashboardSettings(_Section):
 
 class NotificationSettings(_Section):
     enabled: bool = True
-    # auto: macOS -> terminal-notifier if installed (click opens the dashboard entry),
-    #       else osascript (no click action); Linux/Windows -> desktop-notifier.
-    backend: Literal["auto", "terminal-notifier", "osascript", "desktop-notifier", "none"] = "auto"
+    # auto: macOS -> the mailwarden app itself (after `mailwarden launcher`), else
+    #       terminal-notifier if installed, else osascript; Linux/Windows -> desktop-notifier.
+    backend: Literal["auto", "app", "terminal-notifier", "osascript", "desktop-notifier", "none"] = "auto"
     # desktop-notifier only: keep the process alive this long so a click can open the dashboard.
     click_wait_seconds: float = Field(default=0, ge=0, le=600)
 
