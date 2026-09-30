@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import logging
 import re
 import sys
@@ -11,7 +12,10 @@ from pathlib import Path
 from mailwarden import __version__
 from mailwarden.app import App, build_app
 from mailwarden.config import RULES_FILE, ConfigError, home_dir, init_home
+from mailwarden.core.classify.base import BackendError
 from mailwarden.core.models import SLUG_PATTERN, Account, ProviderKind, Tier
+from mailwarden.core.runner import Runner
+from mailwarden.storage.sqlite_store import StoreError
 from mailwarden.core.sender_rules import RulesError, SenderRules, normalise_entry, set_entry_tier
 from mailwarden.dryrun import run_dry_run
 from mailwarden.security.fs import check_private, write_private
@@ -98,9 +102,13 @@ def cmd_forget_account(args: argparse.Namespace) -> int:
     if refresh and account.provider == ProviderKind.GMAIL:
         revoke(app.session, refresh)
     app.secrets.delete(token_key)
+    repo = app.repository()
+    try:
+        repo.delete_account_data(app.user_id, account.name)
+    finally:
+        repo.close()
     app.accounts.remove(app.user_id, account.name)
-    # Stored message metadata is deleted here once the encrypted DB exists (phase 3).
-    print(f"Revoked and deleted the token for {account.name!r} and removed the account.")
+    print(f"Revoked the token for {account.name!r}, deleted it from the keyring, and deleted its stored data.")
     return 0
 
 
@@ -109,7 +117,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     s = app.settings
     print(f"home:            {app.home} (permissions ok)")
     print(f"keyring backend: {app.secrets.backend_name}")
-    print(f"llm backend:     {s.llm.backend}" + (f" (local, model {s.ollama.model})" if s.llm.backend == "ollama" else " (CLOUD: redacted SAFE text only)"))
+    print(f"llm backend:     {app.backend_description()}")
     print(f"outbound hosts:  {', '.join(sorted(app.session.allowed))}")
     failures = 0
     for account in app.accounts.list(app.user_id):
@@ -124,12 +132,32 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         except ProviderError as e:
             failures += 1
             print(f"account {account.name}: FAILED: {e}")
+    if args.llm:
+        failures += _doctor_llm(app)
     return 1 if failures else 0
 
 
+_SYNTHETIC_EMAIL = (
+    "From domain: example-careers.com\nSubject: Interview invitation: Backend Engineer at Example Corp\n\n"
+    "Hi, thanks for applying. We would like to invite you to a 45 minute technical interview. "
+    "Please book a slot by Oct 10 using [LINK:calendly.com]."
+)
+
+
+def _doctor_llm(app: App) -> int:
+    """Check the backend with a hard-coded synthetic email. No real mail is read or sent."""
+    try:
+        backend = app.llm_backend()
+        backend.check()
+        result = backend.classify(_SYNTHETIC_EMAIL)
+    except BackendError as e:
+        print(f"llm check:       FAILED: {e}")
+        return 1
+    print(f"llm check:       ok (synthetic email -> {result.category}/{result.stage}, action_required={result.action_required})")
+    return 0
+
+
 def cmd_dry_run(args: argparse.Namespace) -> int:
-    if args.with_llm:
-        raise UsageError("--with-llm arrives in phase 3; without it nothing is sent to any LLM")
     if not 1 <= args.last <= 500:
         raise UsageError("--last must be between 1 and 500")
     app = build_app()
@@ -140,7 +168,56 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
             raise UsageError(f"no account named {args.account!r}")
     if not accounts:
         raise UsageError("no accounts; run add-account first")
-    run_dry_run(accounts, app.provider_for, app.pipeline(), last=args.last, out=sys.stdout, summary_only=args.summary)
+    llm = None
+    if args.with_llm:
+        llm = app.llm_backend()
+        llm.check()
+        log.info("LLM backend: %s", app.backend_description())
+    run_dry_run(accounts, app.provider_for, app.pipeline(llm), last=args.last, out=sys.stdout, summary_only=args.summary)
+    return 0
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    app = build_app()
+    accounts = app.accounts.list(app.user_id)
+    if not accounts:
+        raise UsageError("no accounts; run add-account first")
+    llm = app.llm_backend()
+    llm.check()  # fail fast: missing key, bad model, server down
+    log.info("LLM backend: %s", app.backend_description())
+    repo = app.repository()
+    try:
+        stats = Runner(
+            user_id=app.user_id,
+            repo=repo,
+            rules=app.rules(),
+            llm=llm,
+            provider_for=app.provider_for,
+            max_body_chars=app.settings.llm.max_body_chars,
+            max_per_run=app.settings.gmail.max_messages_per_run,
+        ).run(accounts)
+    finally:
+        repo.close()
+    print(
+        f"processed {stats.new} new: {stats.classified} classified, {stats.unclassified} unclassified, "
+        f"{stats.sensitive} sensitive (not processed), {stats.ignored} ignored; "
+        f"{stats.job} job emails; {len(stats.alerts)} would notify; {stats.pending} pending for next run"
+    )
+    if stats.accounts_failed:
+        print(f"accounts failed: {', '.join(stats.accounts_failed)}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_set_groq_key(args: argparse.Namespace) -> int:
+    app = build_app()
+    key = getpass.getpass("Groq API key (input hidden): ").strip()
+    if not key.startswith("gsk_") or len(key) < 20:
+        raise UsageError("that does not look like a Groq API key (expected gsk_...)")
+    app.secrets.set(SecretKeys.groq_api_key(app.user_id), key)
+    print("Stored the Groq API key in the OS keyring.")
+    if not app.settings.groq.enabled or app.settings.llm.backend != "groq":
+        print("Note: config.toml does not select Groq yet; set [llm] backend = \"groq\" and [groq] enabled = true.")
     return 0
 
 
@@ -198,16 +275,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     d = sub.add_parser("doctor", help="check keyring, permissions, allowlist and grants")
     d.add_argument("--sync", action="store_true", help="also count recent messages (no content shown)")
+    d.add_argument("--llm", action="store_true", help="also test the LLM backend with a synthetic (fake) email")
     d.set_defaults(func=cmd_doctor)
 
-    sub.add_parser("run").set_defaults(func=_not_yet(3))
+    sub.add_parser("run", help="one sync + classify pass").set_defaults(func=cmd_run)
+    sub.add_parser("set-groq-key", help="store the Groq API key in the OS keyring (hidden input)").set_defaults(
+        func=cmd_set_groq_key
+    )
     sub.add_parser("digest").set_defaults(func=_not_yet(4))
     sub.add_parser("dashboard").set_defaults(func=_not_yet(4))
     dr = sub.add_parser("dry-run", help="show tiers, gate decisions and redacted LLM text; sends/stores nothing")
     dr.add_argument("--last", type=int, default=50, help="messages per account (default 50)")
     dr.add_argument("--account", help="only this account")
     dr.add_argument("--summary", action="store_true", help="print only the summary, no message text")
-    dr.add_argument("--with-llm", action="store_true", help="also classify SAFE mail (phase 3)")
+    dr.add_argument("--with-llm", action="store_true", help="also classify SAFE mail with the configured backend")
     dr.set_defaults(func=cmd_dry_run)
     pr = sub.add_parser("promote", help="move a sender address or domain to a tier")
     pr.add_argument("sender", help="address (a@b.com) or domain (b.com)")
@@ -222,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
     install_logging(logging.DEBUG if args.verbose else logging.INFO)
     try:
         return args.func(args)
-    except (UsageError, ConfigError, RulesError, InsecurePermissions, InsecureKeyringError, EgressBlocked, ProviderError, ValueError) as e:
+    except (UsageError, ConfigError, RulesError, StoreError, BackendError, InsecurePermissions, InsecureKeyringError, EgressBlocked, ProviderError, ValueError) as e:
         print(f"mailwarden: {scrub(str(e))}", file=sys.stderr)
         return 2
     except RequestException as e:

@@ -46,3 +46,18 @@ def test_no_attachment_or_write_endpoints_referenced():
     text = "\n".join(p.read_text() for p in (PKG / "providers").rglob("*.py"))
     for forbidden in ("attachments", "/send", "/modify", "/trash", "batchDelete", "batchModify", "gmail.modify", "mail.google.com/"):
         assert forbidden not in text, forbidden
+
+
+def test_llm_backends_are_only_invoked_from_approved_call_sites():
+    """`.classify(` on a backend may only appear in the pipeline's guarded path.
+
+    cli.py calls it once for `doctor --llm` with a hard-coded synthetic email.
+    """
+    allowed = {PKG / "core" / "pipeline.py", PKG / "core" / "classify" / "base.py", PKG / "cli.py"}
+    offenders = []
+    for path in _modules():
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "classify":
+                if path not in allowed:
+                    offenders.append(f"{path.relative_to(PKG)}:{node.lineno}")
+    assert not offenders, offenders

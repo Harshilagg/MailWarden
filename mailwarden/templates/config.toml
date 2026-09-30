@@ -5,26 +5,29 @@
 user_id = "local"
 
 [llm]
-# "ollama" (default): runs on this machine, free, nothing leaves the machine.
-# "groq": cloud, free tier, receives REDACTED text of SAFE mail only.
-#         Requires [groq] enabled = true below.
-backend = "ollama"
+# "groq":   cloud, free tier. Receives ONLY the redacted text of mail the local
+#           sensitivity gate marked SAFE. Requires [groq] enabled = true and a key
+#           stored with `mailwarden set-groq-key`.
+# "ollama": fully local alternative (needs Ollama installed); nothing leaves the machine.
+backend = "groq"
 # Subject + first N characters of the body are sent for classification.
 max_body_chars = 1500
 
+[groq]
+# Explicit opt-in to sending redacted SAFE text to api.groq.com.
+# Keep your Groq org on the free tier (no billing method): it cannot incur charges,
+# it is rate-limited instead. Enable Zero Data Retention in Groq's Data Controls.
+enabled = true
+model = "openai/gpt-oss-20b"
+reasoning_effort = "low"
+min_interval_seconds = 2.5
+timeout_seconds = 60
+
 [ollama]
-# Must be localhost / 127.0.0.1; a remote Ollama would be data egress.
+# Only used when llm.backend = "ollama". Must be localhost / 127.0.0.1.
 base_url = "http://127.0.0.1:11434"
-# qwen2.5:3b (~2 GB) suits 8 GB machines without a GPU.
-# Use qwen2.5:7b (~4.7 GB) on machines with 16 GB RAM or Apple Silicon.
 model = "qwen2.5:3b"
 timeout_seconds = 180
-
-[groq]
-# Off by default. Keep your Groq org on the free tier (no billing method)
-# and it cannot incur charges; it is rate-limited instead.
-enabled = false
-model = "llama-3.1-8b-instant"
 
 [gmail]
 # Days fetched on first sync, or when Gmail's history cursor has expired.

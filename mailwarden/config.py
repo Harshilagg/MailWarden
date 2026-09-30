@@ -53,8 +53,13 @@ class OllamaSettings(_Section):
 
 
 class GroqSettings(_Section):
+    # Code default stays opt-in: a missing/partial config never sends data to the cloud.
     enabled: bool = False
-    model: str = "llama-3.1-8b-instant"
+    model: str = "openai/gpt-oss-20b"
+    reasoning_effort: Literal["low", "medium", "high"] = "low"
+    # Free tier for gpt-oss-20b: 30 req/min, 8K tokens/min. ~2.5s spacing stays inside it.
+    min_interval_seconds: float = Field(default=2.5, ge=0, le=60)
+    timeout_seconds: float = Field(default=60, gt=0, le=300)
 
 
 class GmailSettings(_Section):

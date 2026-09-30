@@ -1,6 +1,6 @@
 """`mailwarden dry-run`: show what a run WOULD do, without doing any of it.
 
-Never calls an LLM (unless --with-llm, phase 3), never notifies, writes
+Never calls an LLM unless --with-llm is given, never notifies, writes
 nothing (no DB, no sync cursor). For SENSITIVE mail it prints only the
 sender name, sender domain, time and the names of the rules that fired.
 """
@@ -12,7 +12,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TextIO
 
-from mailwarden.core.models import Account, Tier
+from mailwarden.core.alerts import should_alert
+from mailwarden.core.classify.base import BackendUnavailable
+from mailwarden.core.models import Account, Classification, Tier
 from mailwarden.core.pipeline import Pipeline, Triage
 from mailwarden.core.text import clean
 from mailwarden.providers.base import MailProvider, ProviderError
@@ -26,6 +28,9 @@ class DryRunReport:
     ignored: int = 0
     would_classify: int = 0
     priority_safe: int = 0
+    classified: int = 0
+    unclassified: int = 0
+    would_notify: int = 0
     reasons: Counter[str] = field(default_factory=Counter)
     sensitive_by_sender: Counter[str] = field(default_factory=Counter)
     priority_held_back: Counter[str] = field(default_factory=Counter)
@@ -43,6 +48,13 @@ def _notification_line(t: Triage) -> str:
     return "only if classified as job mail needing action (needs --with-llm)"
 
 
+def _alert_text(c: Classification) -> str:
+    parts = [c.company or "Unknown company", str(c.stage or "update")]
+    if c.deadline:
+        parts.append(f"deadline {c.deadline.isoformat()}")
+    return " · ".join(parts)
+
+
 def run_dry_run(
     accounts: list[Account],
     provider_for: Callable[[Account], MailProvider],
@@ -53,6 +65,7 @@ def run_dry_run(
     summary_only: bool = False,
 ) -> DryRunReport:
     report = DryRunReport()
+    llm_ok = pipeline.has_llm
     for account in accounts:
         provider = provider_for(account)
         try:
@@ -101,7 +114,27 @@ def run_dry_run(
                     print(f"    would send to LLM ({len(triage.llm_text)} chars):", file=out)
                     for line in triage.llm_text.splitlines():
                         print(f"    │ {line}", file=out)
-                    print(f"    notification: {_notification_line(triage)}", file=out)
+                    if llm_ok:
+                        try:
+                            c = pipeline.classify_safe(triage)
+                        except BackendUnavailable as e:
+                            llm_ok = False
+                            print(f"    LLM unavailable ({e}); skipping classification for the rest", file=out)
+                            c = None
+                        if llm_ok:
+                            if c is None:
+                                report.unclassified += 1
+                                print("    classification: UNCLASSIFIED (invalid output twice)", file=out)
+                            else:
+                                report.classified += 1
+                                print(f"    classification: {c.model_dump_json()}", file=out)
+                                if should_alert(c):
+                                    report.would_notify += 1
+                                    print(f"    notification: WOULD FIRE: {_alert_text(c)}", file=out)
+                                else:
+                                    print("    notification: none", file=out)
+                    else:
+                        print(f"    notification: {_notification_line(triage)}", file=out)
             msg.discard_content()
 
     _print_summary(report, out)
@@ -114,6 +147,8 @@ def _print_summary(r: DryRunReport, out: TextIO) -> None:
     print(f"sensitive (held):    {r.sensitive}", file=out)
     print(f"ignored:             {r.ignored}", file=out)
     print(f"would be classified: {r.would_classify}  (priority: {r.priority_safe})", file=out)
+    if r.classified or r.unclassified:
+        print(f"classified:          {r.classified}  unclassified: {r.unclassified}  would notify: {r.would_notify}", file=out)
     if r.fetch_errors:
         print(f"fetch errors:        {r.fetch_errors}", file=out)
     if r.reasons:

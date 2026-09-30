@@ -35,9 +35,10 @@ def allowed_hosts(settings: Settings) -> frozenset[str]:
     SECURITY.md must describe exactly this function's output.
     """
     hosts = set(GOOGLE_HOSTS)
-    ollama_host = urlsplit(settings.ollama.base_url).hostname
-    if ollama_host:
-        hosts.add(ollama_host.lower())
+    if settings.llm.backend == "ollama":
+        ollama_host = urlsplit(settings.ollama.base_url).hostname
+        if ollama_host:
+            hosts.add(ollama_host.lower())
     if settings.outlook.enabled:
         hosts |= MICROSOFT_HOSTS
     if settings.groq.enabled:

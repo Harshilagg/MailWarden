@@ -15,6 +15,7 @@ dependencies = [
     "requests>=2.32",
     "platformdirs>=4",
     "PyYAML>=6",
+    "sqlcipher3-wheels>=0.5.4",
 ]
 
 [project.optional-dependencies]

@@ -194,8 +194,8 @@ class GmailProvider(MailProvider):
             page = data.get("nextPageToken")
             if not page:
                 break
-        unique = list(dict.fromkeys(ids))[: self._max_messages]
-        return SyncResult(unique, str(latest), full_sync=False)
+        # Not truncated: the runner defers anything over its per-run cap as pending.
+        return SyncResult(list(dict.fromkeys(ids)), str(latest), full_sync=False)
 
     def _full(self, account: Account) -> SyncResult:
         # Take the history id BEFORE listing so nothing arriving mid-sync is lost.

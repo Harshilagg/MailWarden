@@ -18,13 +18,40 @@ table and the code disagree.
 | `accounts.google.com` | `add-account` (in your browser) | OAuth consent; scope `gmail.readonly` only |
 | `oauth2.googleapis.com` | always | Refresh token → short-lived access token; token revocation on `forget-account` |
 | `gmail.googleapis.com` | always | Read-only API calls (profile, history, message list, message get). No attachment downloads, no writes |
-| `127.0.0.1` | always (from phase 3) | Local Ollama: redacted text of SAFE mail. Stays on this machine |
+| `127.0.0.1` | `[llm] backend = "ollama"` | Local Ollama: redacted text of SAFE mail. Stays on this machine |
 | `graph.microsoft.com` | `[outlook] enabled = true` | Read-only Graph calls, `Mail.Read` (phase 5) |
 | `login.microsoftonline.com` | `[outlook] enabled = true` | Microsoft OAuth (phase 5) |
-| `api.groq.com` | `[groq] enabled = true` | Redacted text of SAFE mail only, never SENSITIVE mail (phase 5) |
+| `api.groq.com` | `[groq] enabled = true` | One request per SAFE email: redacted text of that email plus a fixed prompt. Never SENSITIVE mail. Also `GET /models` to validate the key |
 <!-- allowlist:end -->
 
 No telemetry, analytics or update checks exist.
+
+### About Groq (the default classifier)
+
+With `llm.backend = "groq"`, the redacted text of each SAFE email goes to
+Groq. That text is what `mailwarden dry-run` shows under "would send to LLM":
+the sender's domain, a redacted subject, and up to `llm.max_body_chars`
+redacted body characters. Groq's documentation (checked 2026-09-30) says it
+does not retain inference data by default, but may log inputs and outputs for
+up to 30 days for reliability or abuse investigation. **Turn on Zero Data
+Retention** (Groq console → Settings → Data Controls) to disable that logging.
+Keep the Groq organisation on the free tier with no billing method, so usage
+cannot incur charges. The API key is stored only in the OS keyring
+(`mailwarden set-groq-key`, hidden input).
+
+`mailwarden doctor --llm` sends one hard-coded synthetic email (no real mail) to
+check that the backend works.
+
+### Prompt-injection defences
+
+Email text is untrusted. The system prompt tells the model that the email is
+data and any instructions in it must be ignored. The email is wrapped in
+delimiters carrying a random per-request nonce, so it cannot forge the closing
+tag. Output is pinned with strict structured outputs (JSON schema), then
+re-validated locally by a strict pydantic model that rejects extra keys. Invalid
+output is retried once, then the message is stored as "unclassified". The code
+never acts on model output beyond storing these fields: there are no tools,
+link fetches or follow-up requests.
 
 ## The sensitivity gate
 
@@ -42,7 +69,7 @@ unparseable body or an unparseable sender all count as SENSITIVE.
 
 SENSITIVE mail is never passed to any LLM, and its body and subject are never
 stored or displayed. The only code path that calls an LLM
-(`Pipeline.classify`) refuses anything not marked SAFE.
+(`Pipeline.classify_safe`) refuses anything not marked SAFE.
 `tests/test_zero_llm_sensitive.py` asserts zero LLM calls and zero network
 calls for a set of realistic Indian bank, UPI, OTP, login-alert, KYC and tax
 emails. It runs on every test run, and a skip is reported as a failure.
@@ -70,11 +97,12 @@ and name are not. `mailwarden dry-run` prints this exact text.
 | Item | Where |
 | --- | --- |
 | OAuth refresh tokens, OAuth client, account list | OS keyring (service `mailwarden`) |
-| DB key, dashboard token, optional Groq key | OS keyring (later phases) |
+| Database key (random 256-bit), Groq API key, dashboard token (phase 4) | OS keyring |
 | Settings (non-secret) | `config.toml`, mode 600, in a mode-700 directory |
-| Message metadata and classifications | SQLCipher-encrypted DB (phase 3). No bodies, no subjects |
+| Message metadata and classifications | SQLCipher-encrypted DB at `data/mailwarden.db` (mode 600). No bodies, no subjects. SENSITIVE rows keep only sender display name, received time, account and message id |
+| Applications (company, role, stage, history, company domains) | Same encrypted DB |
 
-Access tokens are held only in memory. mailwarden refuses to start if config
+Access tokens are held only in memory. Email bodies and subjects exist only in memory while a message is processed, and are cleared right after. `forget-account` revokes the token and deletes that account's rows (followed by `VACUUM`, with `secure_delete` on). mailwarden refuses to start if config
 files are group/world accessible, or if the keyring backend is not a real OS
 keyring.
 

@@ -4,20 +4,21 @@ Privacy-first, local-first email triage. mailwarden reads your mailboxes
 **read-only**, makes sure job-application mail is never missed, summarises the
 rest into a digest, and shows everything on a local dashboard.
 
-- Classification runs on a **local** model (Ollama) by default. It is free, and
-  nothing leaves your machine.
+- Classification uses **Groq's free tier** (`openai/gpt-oss-20b`), which only ever
+  receives redacted text of non-sensitive mail. A fully local Ollama backend is
+  available as an alternative.
 - OTPs, bank/UPI/card mail, password resets, login alerts and ID/KYC/tax mail
   are caught by a local gate and **never** reach any LLM.
 - OAuth tokens and keys live only in your OS keyring.
 
-> Status: phase 2 of 5 (safety core). See `SECURITY.md`.
+> Status: phase 3 of 5 (classification and storage). See `SECURITY.md`.
 
 ## Requirements
 
 - Python 3.11+ (3.13 recommended) and [uv](https://docs.astral.sh/uv/)
 - macOS, Linux or Windows with a working OS keyring
   (macOS Keychain, Secret Service / KWallet, Windows Credential Manager)
-- [Ollama](https://ollama.com) (from phase 3)
+- A free [Groq](https://console.groq.com) API key (or, alternatively, a local [Ollama](https://ollama.com))
 
 ## Install
 
@@ -68,6 +69,25 @@ re-run `add-account` weekly. To avoid that, set the publishing status to
 than 100 users) Google allows this; you keep seeing the "unverified app"
 warning at sign-in, and tokens no longer expire weekly.
 
+## Groq API key (free)
+
+1. Sign up at <https://console.groq.com>. Don't add a billing method, so the org
+   stays on the free tier and can't be charged.
+2. **Settings → Data Controls**: enable **Zero Data Retention**.
+3. **API Keys → Create API key**, then:
+
+```sh
+.venv/bin/mailwarden set-groq-key      # hidden prompt; stored in the OS keyring
+.venv/bin/mailwarden doctor --llm      # checks the key with a synthetic email
+```
+
+Free-tier limits for `openai/gpt-oss-20b` are 30 requests/min and 1,000/day.
+mailwarden spaces requests about 2.5 s apart and waits on rate limits.
+Anything it can't finish is kept as *pending* and retried on the next run.
+
+To stay fully local instead, install Ollama, `ollama pull qwen2.5:3b`, and set
+`[llm] backend = "ollama"`.
+
 ## Commands
 
 | Command | What it does |
@@ -75,12 +95,14 @@ warning at sign-in, and tokens no longer expire weekly.
 | `mailwarden init [--reset-rules]` | Create config dir and default config; `--reset-rules` restores the seeded `sender_rules.yaml` (old file kept as `.bak`) |
 | `mailwarden add-account --provider gmail --name <n>` | OAuth sign-in, token stored in keyring |
 | `mailwarden accounts` | List accounts (addresses masked) |
-| `mailwarden doctor [--sync]` | Check keyring, permissions, allowlist, granted scopes; `--sync` counts recent messages without showing content |
-| `mailwarden dry-run [--last N] [--account n] [--summary]` | Show, per message, the tier, gate decision and the exact redacted text that *would* go to the LLM. Sends, stores and notifies nothing |
+| `mailwarden doctor [--sync] [--llm]` | Check keyring, permissions, allowlist, granted scopes; `--sync` counts recent messages without showing content; `--llm` tests the backend with a synthetic email |
+| `mailwarden set-groq-key` | Store the Groq API key in the keyring (hidden input) |
+| `mailwarden run` | One sync + classify pass; stores metadata and classifications in the encrypted DB |
+| `mailwarden dry-run [--last N] [--account n] [--summary] [--with-llm]` | Show, per message, the tier, gate decision and the exact redacted text that *would* go to the LLM. Stores and notifies nothing; sends nothing unless `--with-llm` is given, in which case it also prints each classification and whether a notification would fire |
 | `mailwarden promote <address-or-domain> <tier>` | Move a sender to `priority`, `sensitive`, `ignore` or `default` |
-| `mailwarden forget-account <n>` | Revoke token at Google, delete it from keyring |
+| `mailwarden forget-account <n>` | Revoke token at Google, delete it from the keyring, delete the account's stored data |
 
-`run`, `digest` and `dashboard` arrive in later phases.
+`digest`, `dashboard` and notifications arrive in phase 4.
 
 ## Tuning sender rules
 

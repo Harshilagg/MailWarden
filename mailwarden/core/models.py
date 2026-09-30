@@ -12,7 +12,7 @@ from __future__ import annotations
 import datetime as dt
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Identifiers end up in keyring keys and DB rows, so keep them boring.
 SLUG_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,31}$"
@@ -39,6 +39,12 @@ class Tier(StrEnum):
 class GateDecision(StrEnum):
     SAFE = "safe"
     SENSITIVE = "sensitive"
+
+
+class MessageStatus(StrEnum):
+    DONE = "done"  # fully processed (classified, or deliberately not classified)
+    UNCLASSIFIED = "unclassified"  # LLM output invalid twice
+    PENDING = "pending"  # not yet processed (backend down, fetch failed, over run cap)
 
 
 class Category(StrEnum):
@@ -123,17 +129,28 @@ class Classification(_Frozen):
 
 
 class EmailMeta(_Frozen):
-    """What is persisted about a message. Deliberately has no body or subject."""
+    """What is persisted about a message. Deliberately has no body or subject.
+
+    For SENSITIVE mail only the sender display name, received time and
+    account are kept: sender_address and classification must be None.
+    """
 
     user_id: str
     account: str
     message_id: str
-    sender_address: str
+    sender_address: str | None
     sender_name: str
     received_at: dt.datetime
     tier: Tier
     gate: GateDecision
+    status: MessageStatus = MessageStatus.DONE
     classification: Classification | None = None
+
+    @model_validator(mode="after")
+    def _sensitive_is_minimal(self) -> EmailMeta:
+        if self.gate is GateDecision.SENSITIVE and (self.sender_address or self.classification):
+            raise ValueError("SENSITIVE mail may only store sender name, time and account")
+        return self
 
 
 class Application(_Frozen):

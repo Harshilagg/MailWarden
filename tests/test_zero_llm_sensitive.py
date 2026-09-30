@@ -46,7 +46,7 @@ def test_sensitive_fixture_never_reaches_any_llm(case):
         triage = pipeline.triage(make(sender, name, subject, body))
         assert triage.gate.decision is GateDecision.SENSITIVE, triage
         assert triage.llm_text is None
-        assert pipeline.classify(triage) is None
+        assert pipeline.classify_safe(triage) is None
         assert llm.mock_calls == []
 
 
@@ -69,7 +69,7 @@ def test_gate_error_fails_closed(monkeypatch):
     p = Pipeline(RULES, max_body_chars=1500, llm=llm)
     t = p.triage(make("friend@gmail.com", "Friend", "hi", "hello"))
     assert t.gate.decision is GateDecision.SENSITIVE and t.gate.reasons == ("gate_error",)
-    assert p.classify(t) is None and llm.mock_calls == []
+    assert p.classify_safe(t) is None and llm.mock_calls == []
 
 
 def test_rules_error_fails_closed():
@@ -79,7 +79,7 @@ def test_rules_error_fails_closed():
     p = Pipeline(rules, max_body_chars=1500, llm=llm)
     t = p.triage(make("friend@gmail.com", "Friend", "hi", "hello"))
     assert t.gate.decision is GateDecision.SENSITIVE
-    assert p.classify(t) is None and llm.mock_calls == []
+    assert p.classify_safe(t) is None and llm.mock_calls == []
 
 
 def test_redaction_error_fails_closed(monkeypatch):
@@ -142,7 +142,7 @@ def test_ignore_tier_is_never_classified():
     p = Pipeline(rules, max_body_chars=1500, llm=llm)
     t = p.triage(make("deals@promo.example.com", "Deals", "Big sale", "50% off shoes"))
     assert t.tier is Tier.IGNORE and t.llm_text is None
-    assert p.classify(t) is None and llm.mock_calls == []
+    assert p.classify_safe(t) is None and llm.mock_calls == []
 
 
 def test_classify_refuses_forged_non_safe_triage():
@@ -153,5 +153,43 @@ def test_classify_refuses_forged_non_safe_triage():
     p = Pipeline(RULES, max_body_chars=1500, llm=llm)
     forged = Triage(Tier.DEFAULT, GateResult(GateDecision.SENSITIVE, ("otp",)), "text")
     with pytest.raises(GateViolation):
-        p.classify(forged)
+        p.classify_safe(forged)
     assert llm.mock_calls == []
+
+
+def _real_backends():
+    from mailwarden.core.classify.groq import GroqBackend
+    from mailwarden.core.classify.ollama import OllamaBackend
+    from mailwarden.security.net import GROQ_HOSTS, LOCAL_HOSTS, AllowlistedSession
+
+    return [
+        GroqBackend(AllowlistedSession(GROQ_HOSTS), "gsk_fake_key_for_tests_only", model="openai/gpt-oss-20b"),
+        OllamaBackend(AllowlistedSession(LOCAL_HOSTS), base_url="http://127.0.0.1:11434", model="m", timeout_seconds=1),
+    ]
+
+
+@pytest.mark.parametrize("case", SENSITIVE, ids=[c[0] for c in SENSITIVE])
+def test_real_backends_never_contacted_for_sensitive_mail(case):
+    """The real Groq/Ollama classes, with the network patched to explode on any call."""
+    _, sender, name, subject, body = case
+    for backend in _real_backends():
+        pipeline = Pipeline(RULES, max_body_chars=1500, llm=backend)
+        triage = pipeline.triage(make(sender, name, subject, body))
+        assert pipeline.classify_safe(triage) is None  # no_network fixture would raise on any request
+
+
+def test_runner_never_sends_sensitive_mail(tmp_path, secret_store):
+    from mailwarden.core.runner import Runner
+    from mailwarden.storage.sqlite_store import SQLCipherRepository
+
+    messages = [make(s, n, subj, body, message_id=str(i)) for i, (_, s, n, subj, body) in enumerate(SENSITIVE)]
+    provider = _FakeProvider(messages)
+    llm = MagicMock(spec=LLMBackend)
+    repo = SQLCipherRepository.open(tmp_path / "d" / "mw.db", secret_store, "local")
+    account = Account(user_id="local", name="personal", provider=ProviderKind.GMAIL, address="me@gmail.com")
+    stats = Runner(user_id="local", repo=repo, rules=RULES, llm=llm, provider_for=lambda a: provider,
+                   max_body_chars=1500, max_per_run=500).run([account])
+    assert stats.sensitive == len(SENSITIVE) and llm.mock_calls == []
+    for meta in repo.list_email_meta("local"):
+        assert meta.sender_address is None and meta.classification is None
+    repo.close()

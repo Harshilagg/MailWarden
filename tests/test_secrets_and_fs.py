@@ -42,7 +42,10 @@ def test_init_creates_private_files(tmp_path):
     assert oct(home.stat().st_mode & 0o777) == "0o700"
     assert oct((home / "config.toml").stat().st_mode & 0o777) == "0o600"
     settings = load_settings(home)
-    assert settings.llm.backend == "ollama" and settings.groq.enabled is False
+    # The shipped template opts in to Groq explicitly...
+    assert settings.llm.backend == "groq" and settings.groq.enabled is True
+    # ...but the code default never sends anything to the cloud.
+    assert Settings().llm.backend == "ollama" and Settings().groq.enabled is False
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permissions")

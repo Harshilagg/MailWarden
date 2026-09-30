@@ -6,6 +6,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from mailwarden.config import Settings, home_dir, load_sender_rules, load_settings
+from mailwarden.core.classify.base import LLMBackend
+from mailwarden.core.classify.groq import GroqBackend
+from mailwarden.core.classify.ollama import OllamaBackend
 from mailwarden.core.models import Account, ProviderKind
 from mailwarden.core.pipeline import Pipeline
 from mailwarden.providers.base import MailProvider, ProviderError
@@ -13,8 +16,11 @@ from mailwarden.providers.gmail import GmailProvider
 from mailwarden.providers.google_oauth import GoogleCredentials, OAuthClient
 from mailwarden.security.net import AllowlistedSession, allowed_hosts
 from mailwarden.security.secrets import SecretKeys, SecretStore
-from mailwarden.storage.base import AccountRegistry
+from mailwarden.storage.base import AccountRegistry, Repository
 from mailwarden.storage.keyring_accounts import KeyringAccountRegistry
+from mailwarden.storage.sqlite_store import SQLCipherRepository
+
+DB_RELATIVE_PATH = Path("data") / "mailwarden.db"
 
 
 @dataclass
@@ -44,10 +50,32 @@ class App:
             raise ProviderError(f"no stored token for account {account.name!r}; run add-account")
         return GoogleCredentials(self.google_client(), refresh, self.session)
 
-    def pipeline(self) -> Pipeline:
-        """Pipeline with no LLM attached (phase 2); backends are wired in phase 3."""
-        rules = load_sender_rules(self.home)
-        return Pipeline(rules, max_body_chars=self.settings.llm.max_body_chars)
+    def rules(self):
+        return load_sender_rules(self.home)
+
+    def pipeline(self, llm: LLMBackend | None = None) -> Pipeline:
+        return Pipeline(self.rules(), max_body_chars=self.settings.llm.max_body_chars, llm=llm)
+
+    def llm_backend(self) -> LLMBackend:
+        s = self.settings
+        if s.llm.backend == "groq":
+            key = self.secrets.get(SecretKeys.groq_api_key(self.user_id)) or ""
+            g = s.groq
+            return GroqBackend(
+                self.session, key, model=g.model, reasoning_effort=g.reasoning_effort,
+                min_interval_seconds=g.min_interval_seconds, timeout_seconds=g.timeout_seconds,
+            )
+        o = s.ollama
+        return OllamaBackend(self.session, base_url=o.base_url, model=o.model, timeout_seconds=o.timeout_seconds)
+
+    def backend_description(self) -> str:
+        s = self.settings
+        if s.llm.backend == "groq":
+            return f"groq ({s.groq.model}) - CLOUD: receives redacted text of SAFE mail only"
+        return f"ollama ({s.ollama.model}) - local: nothing leaves this machine"
+
+    def repository(self) -> Repository:
+        return SQLCipherRepository.open(self.home / DB_RELATIVE_PATH, self.secrets, self.user_id)
 
     def provider_for(self, account: Account) -> MailProvider:
         try:
