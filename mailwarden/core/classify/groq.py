@@ -83,6 +83,11 @@ class GroqBackend(LLMBackend):
     def classify(self, redacted_text: str) -> Classification:
         return parse_output(self._chat_json(build_messages(redacted_text), SCHEMA_NAME, OUTPUT_SCHEMA))
 
+    def score_fit(self, messages: list[dict[str, str]]) -> str:
+        from mailwarden.core.fit import FIT_SCHEMA, FIT_SCHEMA_NAME
+
+        return self._chat_json(messages, FIT_SCHEMA_NAME, FIT_SCHEMA, max_tokens=1500)
+
     def extract_jobs(self, redacted_text: str) -> str:
         return self._chat_json(build_messages(redacted_text, system=JOBS_SYSTEM_PROMPT), JOBS_SCHEMA_NAME, JOBS_SCHEMA,
                                max_tokens=2048)

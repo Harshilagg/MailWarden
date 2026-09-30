@@ -57,12 +57,13 @@ def test_llm_backends_are_only_invoked_from_approved_call_sites():
         PKG / "core" / "pipeline.py",
         PKG / "core" / "classify" / "base.py",  # retry-once helper
         PKG / "core" / "classify" / "ratelimit.py",  # rate-limit wrapper around a backend
+        PKG / "core" / "fit.py",  # job fit scores: job text only, never email content
         PKG / "cli.py",
     }
     offenders = []
     for path in _modules():
         for node in ast.walk(ast.parse(path.read_text())):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in ("classify", "extract_jobs"):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in ("classify", "extract_jobs", "score_fit"):
                 if path not in allowed:
                     offenders.append(f"{path.relative_to(PKG)}:{node.lineno}")
     assert not offenders, offenders

@@ -194,6 +194,8 @@ class JobPost(BaseModel):
     location: str | None = Field(default=None, max_length=200)
     #: http(s) only; validated before storing or rendering.
     link: str | None = Field(default=None, max_length=2000)
+    #: Listing details shown in the alert (experience range, skill tags, stipend ...).
+    details: str | None = Field(default=None, max_length=500)
 
 
 class StoredJob(BaseModel):
@@ -210,3 +212,19 @@ class StoredJob(BaseModel):
     message_id: str
     received_at: dt.datetime
     dismissed: bool = False
+    details: str | None = None
+    # job description: status None (not tried) | "ok" | "unavailable"
+    jd_status: str | None = None
+    jd_reason: str | None = None
+    jd_source: str | None = None  # "api:greenhouse", "fetch:<host>", "paste"
+    jd_text: str | None = None
+    jd_fetched_at: dt.datetime | None = None
+    # fit score (level "preliminary" from alert content, "full" from a job description)
+    score: float | None = None
+    score_level: str | None = None
+    matched_skills: tuple[str, ...] = ()
+    missing_skills: tuple[str, ...] = ()
+    evidence: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    best_project: str | None = None
+    why: str | None = None
+    score_hash: str | None = None

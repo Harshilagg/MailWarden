@@ -66,3 +66,10 @@ target_keywords = ["software engineer", "backend", "full stack", "sde"]
 target_locations = ["Bengaluru", "Remote"]
 # At most one "N new jobs match your filters" notification per day, never one per alert email.
 daily_notification = true
+# Fetch job descriptions automatically for candidates on Greenhouse, Lever or Ashby (public APIs).
+jd_auto_fetch = true
+# "Fetch job description" buttons (allowlisted hiring systems only). Opt-in: set true to enable.
+jd_button_fetch = false
+max_jd_fetches_per_run = 30
+# Fit scores per run (one LLM call each).
+max_scores_per_run = 40

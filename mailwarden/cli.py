@@ -216,6 +216,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         ).run(accounts)
     finally:
         repo.close()
+    profile = app.profile()
+    if profile is not None and not stats.accounts_failed:
+        try:
+            jobs_maintenance(app, profile, verbose=not args.quiet)
+        except Exception as e:  # job extras must never break the mail sync
+            log.warning("job-description/scoring pass skipped: %s", type(e).__name__)
     print(
         f"processed {stats.new} new: {stats.classified} classified by LLM, {stats.rule_classified} by rule, "
         f"{stats.unclassified} unclassified, {stats.sensitive} sensitive (not processed; {stats.held_jobs} of "
@@ -444,27 +450,22 @@ def cmd_profile(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_jobs(args: argparse.Namespace) -> int:
+def _jobs_prefilter(app: App, profile: dict, show: str) -> int:
     from collections import Counter
 
     from mailwarden.core.prefilter import prefilter
 
-    app = build_app()
-    profile = app.profile()
-    if profile is None:
-        raise UsageError("no profile.yaml yet: run `mailwarden profile build` first")
     repo = app.repository()
     try:
         jobs = repo.list_jobs(app.user_id)
     finally:
         repo.close()
-    verdicts = [(j, prefilter(j.title, j.location, profile)) for j in jobs]
+    verdicts = [(j, prefilter(j.title, j.location, profile, jd_text=j.jd_text)) for j in jobs]
     kept = [j for j, v in verdicts if not v.excluded]
     reasons = Counter(r.split(" (")[0] for _, v in verdicts for r in v.reasons)
     print(f"{len(jobs)} jobs: {len(kept)} candidates, {len(jobs) - len(kept)} filtered (none are deleted)")
     for reason, n in reasons.most_common():
         print(f"  {n:>4}  {reason}")
-    show = args.show
     if show in ("filtered", "all"):
         print("\nFiltered:")
         for j, v in verdicts:
@@ -474,6 +475,65 @@ def cmd_jobs(args: argparse.Namespace) -> int:
         print("\nCandidates:")
         for j in kept:
             print(f"  + {j.title} · {j.company or '?'} · {j.location or '?'}")
+    return 0
+
+
+def jobs_maintenance(app: App, profile: dict, *, fetch: bool = True, score: bool = True,
+                     fetch_limit: int | None = None, score_limit: int | None = None, verbose: bool = True) -> None:
+    """Automatic JD fetches (public ATS APIs) and fit scoring for candidates."""
+    from mailwarden import profile as prof
+    from mailwarden.core.job_scoring import fetch_auto_jds, score_jobs
+    from mailwarden.security.net import fetch_json
+
+    import fcntl
+    import os
+
+    ja = app.settings.job_alerts
+    lock_fd = os.open(app.home / "jobs.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(lock_fd)
+        if verbose:
+            print("another mailwarden process is fetching/scoring jobs right now; skipped (try again shortly)")
+        return
+    repo = app.repository()
+    try:
+        if fetch and ja.jd_auto_fetch:
+            st = fetch_auto_jds(repo, app.user_id, profile, get_json=lambda url: fetch_json(app.session, url),
+                                limit=fetch_limit if fetch_limit is not None else ja.max_jd_fetches_per_run,
+                                now=dt.datetime.now(dt.UTC))
+            if verbose:
+                print(f"job descriptions (Greenhouse/Lever/Ashby APIs): {st.fetched} fetched, "
+                      f"{st.unavailable} unavailable" + (f" {st.reasons}" if st.reasons else ""))
+        if score:
+            llm = app.llm_backend()
+            st2 = score_jobs(repo, app.user_id, llm, profile, prof.effective_skills(profile),
+                             limit=score_limit if score_limit is not None else ja.max_scores_per_run)
+            if verbose:
+                print(f"fit scores: {st2.scored} new ({st2.full} full, {st2.preliminary} preliminary), "
+                      f"{st2.unchanged} unchanged, {st2.failed} failed"
+                      + (f"; stopped: {st2.stopped}" if st2.stopped else ""))
+    finally:
+        repo.close()
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
+def cmd_jobs(args: argparse.Namespace) -> int:
+    app = build_app()
+    profile = app.profile()
+    if profile is None:
+        raise UsageError("no profile.yaml yet: run `mailwarden profile build` first")
+    if args.jobs_command == "prefilter":
+        return _jobs_prefilter(app, profile, args.show)
+    if args.jobs_command == "fetch":
+        jobs_maintenance(app, profile, score=False, fetch_limit=args.limit)
+        return 0
+    if args.jobs_command == "score":
+        app.llm_backend().check()
+        jobs_maintenance(app, profile, fetch=False, score_limit=args.limit)
+        return 0
     return 0
 
 
@@ -565,6 +625,10 @@ def build_parser() -> argparse.ArgumentParser:
     jb_sub = jb.add_subparsers(dest="jobs_command", required=True)
     jp = jb_sub.add_parser("prefilter", help="show which jobs the local prefilter keeps or filters (and why)")
     jp.add_argument("--show", choices=["summary", "filtered", "kept", "all"], default="filtered")
+    jf = jb_sub.add_parser("fetch", help="fetch job descriptions for candidates on Greenhouse/Lever/Ashby (public APIs)")
+    jf.add_argument("--limit", type=int, default=None)
+    js = jb_sub.add_parser("score", help="compute fit scores for candidates (preliminary or full)")
+    js.add_argument("--limit", type=int, default=None)
     jb.set_defaults(func=cmd_jobs)
     pf = sub.add_parser("profile", help="job-matching profile from your CV and project files (local only)")
     pf_sub = pf.add_subparsers(dest="profile_command", required=True)

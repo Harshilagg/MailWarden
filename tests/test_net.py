@@ -80,8 +80,12 @@ def test_redirect_to_disallowed_host_is_blocked():
     assert all("evil" not in r.url for r in transport.requests)
 
 
-def test_default_allowlist_is_google_plus_local_ollama():
-    assert allowed_hosts(Settings()) == GOOGLE_HOSTS | {"127.0.0.1"}
+def test_default_allowlist_is_google_ollama_and_job_board_apis():
+    from mailwarden.security.net import JD_API_HOSTS
+
+    assert allowed_hosts(Settings()) == GOOGLE_HOSTS | {"127.0.0.1"} | JD_API_HOSTS
+    off = Settings.model_validate({"job_alerts": {"jd_auto_fetch": False}})
+    assert allowed_hosts(off) == GOOGLE_HOSTS | {"127.0.0.1"}
 
 
 def test_groq_and_outlook_hosts_only_when_enabled():

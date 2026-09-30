@@ -21,6 +21,10 @@ table and the code disagree.
 | `127.0.0.1` | `[llm] backend = "ollama"` | Local Ollama: redacted text of SAFE mail. Stays on this machine |
 | `graph.microsoft.com` | `[outlook] enabled = true` | Read-only Graph calls, `Mail.Read` (phase 5) |
 | `login.microsoftonline.com` | `[outlook] enabled = true` | Microsoft OAuth (phase 5) |
+| `boards-api.greenhouse.io` | `[job_alerts] jd_auto_fetch = true` (default) | GET of one public job posting, for candidate jobs hosted on Greenhouse. No cookies, no tracking links |
+| `api.lever.co` | `[job_alerts] jd_auto_fetch = true` (default) | GET of one public job posting (Lever) |
+| `api.eu.lever.co` | `[job_alerts] jd_auto_fetch = true` (default) | GET of one public job posting (Lever, EU) |
+| `api.ashbyhq.com` | `[job_alerts] jd_auto_fetch = true` (default) | GET of a company's public job board (Ashby) |
 | `api.groq.com` | `[groq] enabled = true` | One request per SAFE email: redacted text of that email plus a fixed prompt. Never SENSITIVE mail. Also `GET /models` to validate the key |
 <!-- allowlist:end -->
 
@@ -159,6 +163,45 @@ Names, employers and colleges are deliberately not redacted, because they're
 needed for classification. The text is then cut to the subject plus the first `llm.max_body_chars` (default 1500)
 characters of the body. The sender's domain is kept; the sender's address
 and name are not. `mailwarden dry-run` prints this exact text.
+
+### Job descriptions
+
+Job descriptions (JDs) make fit scores meaningful. They come from three places, and
+none of them uses anything from your mailbox beyond the job's own link:
+
+1. **Automatic (`[job_alerts] jd_auto_fetch = true`, default).** Only for candidate jobs
+   (those passing the prefilter) whose link is on **Greenhouse, Lever or Ashby**. The
+   job's public posting is read from those companies' job-board APIs (the fixed hosts
+   in the table above), with no cookies and no tracking links, at most
+   `max_jd_fetches_per_run` per run, paced, and cached for 7 days.
+2. **Buttons (`[job_alerts] jd_button_fetch = true`, off by default).** "Fetch job
+   description" and "Fetch JDs for top 10" on the Job alerts page, only when you click
+   them. They use a separate, isolated session that may contact only these sites and
+   their subdomains:
+   <!-- jd-fetch-sites:start -->
+   `greenhouse.io`, `lever.co`, `ashbyhq.com`, `myworkdayjobs.com`, `myworkdaysite.com`, `smartrecruiters.com`, `successfactors.com`, `successfactors.eu`, `sapsf.com`, `sapsf.eu`, `jobs2web.com`
+   <!-- jd-fetch-sites:end -->
+   Every hop, redirects included, must be on that list. Requests are HTTPS on the
+   default port only, never to IP addresses, and only to hosts that resolve to public
+   addresses; the address actually connected to is checked too. They're GET only, with
+   no cookies or credentials. Tracking parameters (`utm_*`, `trk`, `gh_src` ...) are
+   removed, and responses are capped at 2 MB.
+3. **Paste.** For LinkedIn, Naukri, Indeed, Internshala, click-tracker links and any
+   other site, the card explains why it can't be fetched and offers a "Paste JD" box.
+   Pasted text is stored and scored like a fetched JD.
+
+Unsubscribe, preference and feedback links are never followed. JD text is untrusted: it
+is cleaned (links removed, hidden page text dropped), stored in the encrypted database,
+and wrapped as data in the scoring prompt.
+
+### Fit scores
+
+`mailwarden run` (and `mailwarden jobs score`) sends one request per candidate job to
+the configured LLM, at most `max_scores_per_run` per run. Each request contains the job
+(title, company, location, listing details, and the JD if available) and a profile summary
+from `profile.yaml`: weighted skills, experience, education, experience summary,
+highlights, target roles and project one-liners. It never contains contact details:
+`profile build` refuses to write them. Scores only order jobs; nothing is hidden.
 
 ## OAuth scopes
 

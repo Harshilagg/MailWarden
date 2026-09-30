@@ -68,6 +68,8 @@ class DashboardDeps:
     job_locations: list[str] = field(default_factory=list)
     #: Loads profile.yaml (None if not built yet); read per request so edits apply at once.
     profile_loader: Callable[[], dict | None] = lambda: None
+    #: Job-description buttons (core.job_scoring.JobActions); None disables them.
+    job_actions: object | None = None
     now: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.UTC)
 
 
@@ -126,14 +128,14 @@ def create_app(deps: DashboardDeps) -> FastAPI:
             response.headers[k] = v
         return response
 
-    async def check_post(request: Request) -> dict[str, str]:
+    async def check_post(request: Request, max_body: int = 4096) -> dict[str, str]:
         origin = request.headers.get("origin")
         if origin is not None and origin not in origins:
             raise PermissionError("cross-origin request")
         if request.headers.get("content-type", "").split(";")[0].strip() != "application/x-www-form-urlencoded":
             raise PermissionError("unexpected content type")
         body = await request.body()
-        if len(body) > 4096:
+        if len(body) > max_body:
             raise PermissionError("body too large")
         form = {k: v[0] for k, v in parse_qs(body.decode("utf-8", "replace")).items()}
         if not auth.token_matches(form.get("csrf"), csrf):
@@ -235,41 +237,99 @@ def create_app(deps: DashboardDeps) -> FastAPI:
                       generated=dt.datetime.fromisoformat(d.generated_at),
                       sensitive_total=sum(d.sensitive_by_sender.values()))
 
-    @app.get("/jobs")
-    def jobs(request: Request, view: str = "candidates", match: int = 0) -> Response:
+    def _job_rows(profile: dict | None):
+        from mailwarden.core.jd import plan
         from mailwarden.core.prefilter import prefilter
         from mailwarden.profile import match_role
 
-        if match:  # old links (/jobs?match=1) land on the candidates view
-            view = "candidates"
-        if view not in ("candidates", "all", "filtered"):
-            view = "candidates"
         repo = deps.repo_factory()
         try:
             stored = repo.list_jobs(deps.user_id)
         finally:
             repo.close()
-        try:
-            profile = deps.profile_loader()
-        except Exception:
-            profile = None
         targets = list((profile or {}).get("target_roles") or [])
+        actions = deps.job_actions
+        button = bool(actions and getattr(actions, "button_fetch_enabled", False))
         rows = []
         for j in stored:
-            verdict = prefilter(j.title, j.location, profile) if profile else None
+            verdict = prefilter(j.title, j.location, profile, jd_text=j.jd_text) if profile else None
             if targets:
                 highlight = match_role(j.title, targets) is not None
             else:
                 highlight = matches_filters(j.title, j.location, deps.job_keywords, deps.job_locations)
-            rows.append((j, highlight and not (verdict and verdict.excluded), safe_link(j.link), verdict))
-        filtered = sum(1 for r in rows if r[3] and r[3].excluded)
-        counts = {"candidates": len(rows) - filtered, "all": len(rows), "filtered": filtered}
+            p = plan(j.link)
+            can_fetch = bool(actions) and j.jd_status != "ok" and (p.automatic or (button and p.kind != "none"))
+            rows.append({"job": j, "match": highlight and not (verdict and verdict.excluded),
+                         "link": safe_link(j.link), "verdict": verdict, "can_fetch": can_fetch,
+                         "why_not": p.why_not if p.kind == "none" else None})
+        return rows, targets
+
+    @app.get("/jobs")
+    def jobs(request: Request, view: str = "candidates", sort: str = "score", match: int = 0) -> Response:
+        if match:  # old links (/jobs?match=1) land on the candidates view
+            view = "candidates"
+        if view not in ("candidates", "all", "filtered"):
+            view = "candidates"
+        sort = sort if sort in ("score", "newest") else "score"
+        try:
+            profile = deps.profile_loader()
+        except Exception:
+            profile = None
+        rows, targets = _job_rows(profile)
+        excluded = [r for r in rows if r["verdict"] and r["verdict"].excluded]
+        counts = {"candidates": len(rows) - len(excluded), "all": len(rows), "filtered": len(excluded)}
         if view == "candidates":
-            rows = [r for r in rows if not (r[3] and r[3].excluded)]
+            rows = [r for r in rows if not (r["verdict"] and r["verdict"].excluded)]
         elif view == "filtered":
-            rows = [r for r in rows if r[3] and r[3].excluded]
-        return render("jobs.html", request, rows=rows, view=view, counts=counts, has_profile=profile is not None,
-                      targets=targets, keywords=deps.job_keywords, locations=deps.job_locations)
+            rows = excluded
+        if sort == "score":  # full scores before preliminary at equal score; unscored last
+            rows.sort(key=lambda r: (r["job"].score is None, -(r["job"].score or 0),
+                                     r["job"].score_level != "full", -r["job"].received_at.timestamp()))
+        return render("jobs.html", request, rows=rows, view=view, sort=sort, counts=counts,
+                      has_profile=profile is not None, targets=targets, keywords=deps.job_keywords,
+                      locations=deps.job_locations, actions=deps.job_actions is not None)
+
+    def _back(form: dict[str, str], job_id: int | None = None) -> RedirectResponse:
+        view = form.get("view", "candidates")
+        view = view if view in ("candidates", "all", "filtered") else "candidates"
+        sort = form.get("sort", "score")
+        sort = sort if sort in ("score", "newest") else "score"
+        anchor = f"#job-{job_id}" if job_id else ""
+        return RedirectResponse(f"/jobs?view={view}&sort={sort}{anchor}", status_code=303)
+
+    @app.post("/jobs/{job_id}/fetch-jd")
+    async def fetch_jd(request: Request, job_id: int) -> Response:
+        try:
+            form = await check_post(request)
+        except PermissionError:
+            return forbidden()
+        if deps.job_actions is not None:
+            deps.job_actions.fetch(job_id)
+        return _back(form, job_id)
+
+    @app.post("/jobs/{job_id}/paste-jd")
+    async def paste_jd(request: Request, job_id: int) -> Response:
+        try:
+            form = await check_post(request, max_body=120_000)
+        except PermissionError:
+            return forbidden()
+        if deps.job_actions is not None:
+            deps.job_actions.paste(job_id, form.get("jd", "")[:30_000])
+        return _back(form, job_id)
+
+    @app.post("/jobs/fetch-top")
+    async def fetch_top(request: Request) -> Response:
+        try:
+            form = await check_post(request)
+        except PermissionError:
+            return forbidden()
+        if deps.job_actions is not None:
+            profile = deps.profile_loader()
+            rows, _ = _job_rows(profile)
+            rows = [r for r in rows if r["can_fetch"] and not (r["verdict"] and r["verdict"].excluded)]
+            rows.sort(key=lambda r: (-(r["job"].score or 0), -r["job"].received_at.timestamp()))
+            deps.job_actions.fetch_top([r["job"].id for r in rows[:10]])
+        return _back(form)
 
     @app.post("/jobs/{job_id}/dismiss")
     async def dismiss_job(request: Request, job_id: int) -> Response:
@@ -282,9 +342,7 @@ def create_app(deps: DashboardDeps) -> FastAPI:
             repo.dismiss_job(deps.user_id, job_id)
         finally:
             repo.close()
-        view = form.get("view", "candidates")
-        return RedirectResponse(f"/jobs?view={view}" if view in ("candidates", "all", "filtered") else "/jobs",
-                                status_code=303)
+        return _back(form)
 
     @app.get("/sensitive")
     def sensitive(request: Request) -> Response:

@@ -87,6 +87,18 @@ class Repository(ABC):
     @abstractmethod
     def dismiss_job(self, user_id: str, job_id: int) -> bool: ...
 
+    @abstractmethod
+    def get_job(self, user_id: str, job_id: int) -> StoredJob | None: ...
+
+    @abstractmethod
+    def save_jd(self, user_id: str, job_id: int, *, status: str, reason: str | None, source: str | None,
+                text: str | None) -> None:
+        """Record a job description (status "ok") or why none is available ("unavailable")."""
+
+    @abstractmethod
+    def save_score(self, user_id: str, job_id: int, *, score: float, level: str, detail: dict,
+                   input_hash: str) -> None: ...
+
     # small per-user state (e.g. when the daily job notice was last sent)
     @abstractmethod
     def get_state(self, user_id: str, key: str) -> str | None: ...

@@ -282,3 +282,28 @@ def test_parse_output_never_stores_placeholders():
 def test_job_alert_is_a_schema_category():
     assert "job_alert" in OUTPUT_SCHEMA["properties"]["category"]["enum"]
     assert parse_output(json.dumps({**GOOD, "category": "job_alert", "stage": None})).category is Category.JOB_ALERT
+
+
+def test_token_bucket_paces_large_requests():
+    clock = _Clock()
+    inner, _, _ = groq(lambda r: (200, _chat(json.dumps(GOOD)), {}))
+    limited = RateLimitedBackend(inner, per_minute=60, per_run=100, tokens_per_minute=6000,
+                                 clock=clock, sleep=clock.sleep)
+    big = [{"role": "user", "content": "x" * 7000}]  # ~2000 + 900 tokens each
+    for _ in range(4):
+        try:
+            limited.score_fit(big)
+        except Exception:
+            pass
+    # 4 calls x ~2900 tokens ~ 11600 tokens at 6000/min -> about a minute of waiting
+    assert 50 <= clock.now <= 70
+
+
+def test_token_bucket_allows_small_bursts():
+    clock = _Clock()
+    inner, _, _ = groq(lambda r: (200, _chat(json.dumps(GOOD)), {}))
+    limited = RateLimitedBackend(inner, per_minute=60, per_run=100, tokens_per_minute=7000,
+                                 clock=clock, sleep=clock.sleep)
+    for _ in range(5):
+        limited.classify("short email")
+    assert clock.now < 5

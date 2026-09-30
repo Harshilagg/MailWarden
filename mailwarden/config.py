@@ -40,6 +40,8 @@ class LLMSettings(_Section):
     max_llm_calls_per_minute: int = Field(default=6, ge=1, le=600)
     # Anything beyond this stays pending for the next run.
     max_llm_calls_per_run: int = Field(default=150, ge=1, le=5000)
+    # Estimated tokens per minute (prompt + answer). Groq free tier allows 8,000/min.
+    max_llm_tokens_per_minute: int = Field(default=7000, ge=500, le=10_000_000)
 
 
 class OllamaSettings(_Section):
@@ -102,6 +104,15 @@ class JobAlertSettings(_Section):
     target_locations: list[str] = ["Bengaluru", "Remote"]
     # At most one "N new jobs match your filters" notification per day (sent with the digest).
     daily_notification: bool = True
+    # Automatically fetch job descriptions for candidates hosted on Greenhouse, Lever or Ashby,
+    # through their public job-board APIs (fixed hosts, no cookies, cached 7 days).
+    jd_auto_fetch: bool = True
+    # The "Fetch job description" buttons (you click them). Allowlisted hiring systems only:
+    # Greenhouse, Lever, Ashby, Workday, SmartRecruiters, SuccessFactors/jobs2web. Opt-in.
+    jd_button_fetch: bool = False
+    max_jd_fetches_per_run: int = Field(default=30, ge=0, le=500)
+    # Fit scores computed per run (each is one LLM call; shares the LLM rate limit).
+    max_scores_per_run: int = Field(default=40, ge=0, le=1000)
 
 
 class DigestSettings(_Section):

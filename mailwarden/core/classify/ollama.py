@@ -31,6 +31,11 @@ class OllamaBackend(LLMBackend):
     def classify(self, redacted_text: str) -> Classification:
         return parse_output(self._chat_json(build_messages(redacted_text), OUTPUT_SCHEMA))
 
+    def score_fit(self, messages: list[dict[str, str]]) -> str:
+        from mailwarden.core.fit import FIT_SCHEMA
+
+        return self._chat_json(messages, FIT_SCHEMA)
+
     def extract_jobs(self, redacted_text: str) -> str:
         return self._chat_json(build_messages(redacted_text, system=JOBS_SYSTEM_PROMPT), JOBS_SCHEMA)
 

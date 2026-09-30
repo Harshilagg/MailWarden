@@ -45,6 +45,10 @@ class LLMBackend(ABC):
         """
         raise NotImplementedError
 
+    def score_fit(self, messages: list[dict[str, str]]) -> str:
+        """Return raw JSON rating one job against the profile (see core/fit.py). Optional."""
+        raise NotImplementedError
+
     def check(self) -> None:
         """Fail fast if the backend is unusable (missing key, server not running)."""
 

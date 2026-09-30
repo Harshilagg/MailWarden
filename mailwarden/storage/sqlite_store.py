@@ -31,7 +31,7 @@ from mailwarden.security.fs import check_private, ensure_private_dir
 from mailwarden.security.secrets import SecretKeys, SecretStore
 from mailwarden.storage.base import ApplicationEvent, Repository
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Columns added after v1: (name, SQL type). Applied with ALTER TABLE on open.
 _MESSAGE_COLUMNS_V2 = (
@@ -182,11 +182,24 @@ class SQLCipherRepository(Repository):
                 self._db.execute(f"ALTER TABLE messages ADD COLUMN {name} {sql_type}")
         if "urgent_since" not in existing:
             self._pin_currently_urgent()
+        self._migrate_jobs()
         self._db.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
             "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             (str(SCHEMA_VERSION),),
         )
+
+    _JOB_COLUMNS_V6 = (
+        ("listing_details", "TEXT"), ("jd_status", "TEXT"), ("jd_reason", "TEXT"), ("jd_source", "TEXT"),
+        ("jd_text", "TEXT"), ("jd_fetched_at", "TEXT"), ("score", "REAL"), ("score_level", "TEXT"),
+        ("score_json", "TEXT"), ("score_hash", "TEXT"), ("scored_at", "TEXT"),
+    )
+
+    def _migrate_jobs(self) -> None:
+        existing = {r[1] for r in self._db.execute("PRAGMA table_info(job_postings)")}
+        for name, sql_type in self._JOB_COLUMNS_V6:
+            if name not in existing:
+                self._db.execute(f"ALTER TABLE job_postings ADD COLUMN {name} {sql_type}")
 
     def _pin_currently_urgent(self) -> None:
         """v5 migration: pin everything that is urgent right now, so nothing drops out later."""
@@ -375,24 +388,39 @@ class SQLCipherRepository(Repository):
             if exists:
                 # Same job seen via another sender: keep the first sighting, fill gaps only.
                 self._db.execute(
-                    "UPDATE job_postings SET link = COALESCE(link, ?), location = COALESCE(location, ?) "
-                    "WHERE user_id = ? AND dedup_key = ?",
-                    (post.link, post.location, user_id, key),
+                    "UPDATE job_postings SET link = COALESCE(link, ?), location = COALESCE(location, ?), "
+                    "listing_details = COALESCE(listing_details, ?) WHERE user_id = ? AND dedup_key = ?",
+                    (post.link, post.location, post.details, user_id, key),
                 )
                 continue
             self._db.execute(
                 "INSERT INTO job_postings (user_id, dedup_key, title, company, location, link, sender, account, "
-                "message_id, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "message_id, received_at, listing_details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (user_id, key, post.title, post.company, post.location, post.link, sender[:200], account,
-                 message_id, _iso(received_at)),
+                 message_id, _iso(received_at), post.details),
             )
             new += 1
         return new
 
+    _JOB_SELECT = ("SELECT id, title, company, location, link, sender, account, message_id, received_at, dismissed_at, "
+                   "listing_details, jd_status, jd_reason, jd_source, jd_text, jd_fetched_at, score, score_level, score_json, "
+                   "score_hash FROM job_postings")
+
+    def _row_to_job(self, user_id: str, r: tuple) -> StoredJob:
+        detail = json.loads(r[18]) if r[18] else {}
+        return StoredJob(
+            id=r[0], user_id=user_id, title=r[1], company=r[2], location=r[3], link=r[4], sender=r[5],
+            account=r[6], message_id=r[7], received_at=dt.datetime.fromisoformat(r[8]), dismissed=r[9] is not None,
+            details=r[10], jd_status=r[11], jd_reason=r[12], jd_source=r[13], jd_text=r[14],
+            jd_fetched_at=dt.datetime.fromisoformat(r[15]) if r[15] else None, score=r[16], score_level=r[17],
+            matched_skills=tuple(detail.get("matched_skills", ())), missing_skills=tuple(detail.get("missing_skills", ())),
+            evidence=tuple((e["project"], tuple(e.get("skills", ()))) for e in detail.get("evidence", ())),
+            best_project=detail.get("best_project"), why=detail.get("why"), score_hash=r[19],
+        )
+
     def list_jobs(self, user_id: str, *, include_dismissed: bool = False, since: dt.datetime | None = None,
                   limit: int = 500) -> list[StoredJob]:
-        sql = ("SELECT id, title, company, location, link, sender, account, message_id, received_at, dismissed_at "
-               "FROM job_postings WHERE user_id = ?")
+        sql = self._JOB_SELECT + " WHERE user_id = ?"
         args: list[object] = [user_id]
         if not include_dismissed:
             sql += " AND dismissed_at IS NULL"
@@ -401,12 +429,26 @@ class SQLCipherRepository(Repository):
             args.append(_iso(since))
         sql += " ORDER BY received_at DESC, id DESC LIMIT ?"
         args.append(limit)
-        return [
-            StoredJob(id=r[0], user_id=user_id, title=r[1], company=r[2], location=r[3], link=r[4], sender=r[5],
-                      account=r[6], message_id=r[7], received_at=dt.datetime.fromisoformat(r[8]),
-                      dismissed=r[9] is not None)
-            for r in self._db.execute(sql, args).fetchall()
-        ]
+        return [self._row_to_job(user_id, r) for r in self._db.execute(sql, args).fetchall()]
+
+    def get_job(self, user_id: str, job_id: int) -> StoredJob | None:
+        row = self._db.execute(self._JOB_SELECT + " WHERE user_id = ? AND id = ?", (user_id, job_id)).fetchone()
+        return self._row_to_job(user_id, row) if row else None
+
+    def save_jd(self, user_id: str, job_id: int, *, status: str, reason: str | None, source: str | None,
+                text: str | None) -> None:
+        self._db.execute(
+            "UPDATE job_postings SET jd_status = ?, jd_reason = ?, jd_source = ?, jd_text = ?, jd_fetched_at = ? "
+            "WHERE user_id = ? AND id = ?",
+            (status, reason, source, text, _now(), user_id, job_id),
+        )
+
+    def save_score(self, user_id: str, job_id: int, *, score: float, level: str, detail: dict, input_hash: str) -> None:
+        self._db.execute(
+            "UPDATE job_postings SET score = ?, score_level = ?, score_json = ?, score_hash = ?, scored_at = ? "
+            "WHERE user_id = ? AND id = ?",
+            (score, level, json.dumps(detail), input_hash, _now(), user_id, job_id),
+        )
 
     def dismiss_job(self, user_id: str, job_id: int) -> bool:
         cur = self._db.execute("UPDATE job_postings SET dismissed_at = ? WHERE user_id = ? AND id = ?",

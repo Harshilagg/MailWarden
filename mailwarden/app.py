@@ -71,7 +71,8 @@ class App:
             o = s.ollama
             inner = OllamaBackend(self.session, base_url=o.base_url, model=o.model, timeout_seconds=o.timeout_seconds)
         return RateLimitedBackend(
-            inner, per_minute=s.llm.max_llm_calls_per_minute, per_run=s.llm.max_llm_calls_per_run
+            inner, per_minute=s.llm.max_llm_calls_per_minute, per_run=s.llm.max_llm_calls_per_run,
+            tokens_per_minute=s.llm.max_llm_tokens_per_minute,
         )
 
     def backend_description(self) -> str:
@@ -79,6 +80,27 @@ class App:
         if s.llm.backend == "groq":
             return f"groq ({s.groq.model}) - CLOUD: receives redacted text of SAFE mail only"
         return f"ollama ({s.ollama.model}) - local: nothing leaves this machine"
+
+    def job_actions(self):
+        from mailwarden import profile as prof
+        from mailwarden.core.jd import BUTTON_FETCH_SUFFIXES
+        from mailwarden.core.job_scoring import JobActions
+        from mailwarden.security.net import PublicWebSession, fetch_json
+
+        ja = self.settings.job_alerts
+        button = PublicWebSession(BUTTON_FETCH_SUFFIXES) if ja.jd_button_fetch else None
+        path = self.home / DB_RELATIVE_PATH
+        key = self.secrets.get(SecretKeys.db_key(self.user_id)) or ""
+        return JobActions(
+            user_id=self.user_id,
+            repo_factory=lambda: SQLCipherRepository(path, key),
+            profile_loader=self.profile,
+            effective_skills=prof.effective_skills,
+            llm_factory=self.llm_backend,
+            auto_json=(lambda url: fetch_json(self.session, url)) if ja.jd_auto_fetch else None,
+            button_json=button.fetch_json if button else None,
+            button_page=(lambda url: button.fetch_html(url)[::2]) if button else None,
+        )
 
     def profile(self) -> dict | None:
         """profile.yaml (None if not built yet)."""
@@ -143,6 +165,7 @@ class App:
             job_keywords=self.settings.job_alerts.target_keywords,
             job_locations=self.settings.job_alerts.target_locations,
             profile_loader=self.profile,
+            job_actions=self.job_actions(),
         )
         return create_app(deps)
 

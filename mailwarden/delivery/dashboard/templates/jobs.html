@@ -2,30 +2,59 @@
 {% block title %}Job alerts · mailwarden{% endblock %}
 {% block content %}
 <h1>Job alerts <span class="count">{{ counts.all }}</span></h1>
-<p class="lead">Jobs from your job-alert emails, newest first, with duplicates across sites merged.
-{% if has_profile %}Candidates pass your profile's prefilter; nothing is hidden: filtered jobs stay under All with the reason.
-{% if targets %}Highlighted jobs match your target roles.{% endif %}
-{% else %}Build your profile (<code>mailwarden profile build</code>) to filter out senior, off-location and avoided roles.{% endif %}</p>
+<p class="lead">Jobs from your job-alert emails, with duplicates across sites merged.
+{% if has_profile %}Candidates pass your profile's prefilter. Scores only order the list: nothing is hidden, and filtered jobs stay under All with the reason.
+A <em>preliminary</em> score comes from the alert alone (at most 7); a <em>full</em> score uses the job description.
+{% else %}Build your profile (<code>mailwarden profile build</code>) to filter and score jobs.{% endif %}</p>
 <p class="filters">
-  <a href="/jobs?view=candidates"{% if view == "candidates" %} aria-current="page"{% endif %}>Candidates ({{ counts.candidates }})</a>
-  <a href="/jobs?view=all"{% if view == "all" %} aria-current="page"{% endif %}>All ({{ counts.all }})</a>
-  <a href="/jobs?view=filtered"{% if view == "filtered" %} aria-current="page"{% endif %}>Filtered ({{ counts.filtered }})</a>
+  <a href="/jobs?view=candidates&sort={{ sort }}"{% if view == "candidates" %} aria-current="page"{% endif %}>Candidates ({{ counts.candidates }})</a>
+  <a href="/jobs?view=all&sort={{ sort }}"{% if view == "all" %} aria-current="page"{% endif %}>All ({{ counts.all }})</a>
+  <a href="/jobs?view=filtered&sort={{ sort }}"{% if view == "filtered" %} aria-current="page"{% endif %}>Filtered ({{ counts.filtered }})</a>
+  <span class="meta">Sort:</span>
+  <a href="/jobs?view={{ view }}&sort=score"{% if sort == "score" %} aria-current="page"{% endif %}>Best score</a>
+  <a href="/jobs?view={{ view }}&sort=newest"{% if sort == "newest" %} aria-current="page"{% endif %}>Newest</a>
 </p>
+{% if actions and view != "filtered" %}
+<form method="post" action="/jobs/fetch-top" class="inline">
+  <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="view" value="{{ view }}"><input type="hidden" name="sort" value="{{ sort }}">
+  <button class="secondary">Fetch JDs for top 10</button>
+</form>
+{% endif %}
 {% if not rows %}<p class="empty">{% if view == "filtered" %}Nothing is filtered out.{% elif view == "candidates" and counts.all %}Every job is filtered out: see All.{% else %}No jobs yet. They appear as job-alert emails are processed.{% endif %}</p>{% endif %}
 <ul class="jobs">
-{% for j, is_match, link, verdict in rows %}
-  <li class="job{% if is_match %} match{% endif %}">
+{% for r in rows %}{% set j = r.job %}
+  <li class="job{% if r.match %} match{% endif %}" id="job-{{ j.id }}">
     <div class="job-main">
-      <span class="job-title">{{ j.title }}</span>
-      <span class="meta">{{ j.company or "Company not listed" }}{% if j.location %} · {{ j.location }}{% endif %}</span>
+      <span class="job-title">{% if j.score is not none %}<span class="pill">{{ "%.1f"|format(j.score) }} · {{ j.score_level }}</span> {% endif %}{{ j.title }}</span>
+      <span class="meta">{{ j.company or "Company not listed" }}{% if j.location %} · {{ j.location }}{% endif %}{% if j.details %} · {{ j.details }}{% endif %}</span>
+      {% if j.why %}<span class="summary">{{ j.why }}</span>{% endif %}
+      {% if j.best_project %}<span class="meta">Lead with: {{ j.best_project }}</span>{% endif %}
+      {% if j.missing_skills %}<span class="meta">Missing: {{ j.missing_skills|join(", ") }}</span>{% endif %}
       <span class="meta">via {{ j.sender }} · {{ j.received_at|ago }}</span>
-      {% if verdict and verdict.excluded %}<span class="meta"><span class="pill">Filtered</span> {{ verdict.reasons|join("; ") }}</span>{% endif %}
+      {% if r.verdict and r.verdict.excluded %}<span class="meta"><span class="pill">Filtered</span> {{ r.verdict.reasons|join("; ") }}</span>{% endif %}
+      {% if j.jd_status == "ok" %}<span class="meta">Job description: {% if j.jd_source == "paste" %}pasted{% else %}fetched ({{ j.jd_source }}){% endif %}</span>
+      {% elif j.jd_status == "unavailable" %}<span class="meta">Job description unavailable: {{ j.jd_reason }}</span>
+      {% elif r.why_not %}<span class="meta">{{ r.why_not }}</span>{% endif %}
+      {% if actions and j.jd_status != "ok" %}
+      <details><summary>Paste JD</summary>
+        <form method="post" action="/jobs/{{ j.id }}/paste-jd">
+          <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="view" value="{{ view }}"><input type="hidden" name="sort" value="{{ sort }}">
+          <textarea name="jd" rows="8" cols="60" maxlength="30000" placeholder="Paste the job description here"></textarea>
+          <button class="secondary">Save and score</button>
+        </form>
+      </details>
+      {% endif %}
     </div>
     <div class="actions">
-      {% if link %}<a class="button" href="{{ link }}" target="_blank" rel="noopener noreferrer">Open</a>{% endif %}
+      {% if r.link %}<a class="button" href="{{ r.link }}" target="_blank" rel="noopener noreferrer">Open</a>{% endif %}
+      {% if r.can_fetch %}
+      <form method="post" action="/jobs/{{ j.id }}/fetch-jd" class="inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="view" value="{{ view }}"><input type="hidden" name="sort" value="{{ sort }}">
+        <button class="secondary">Fetch job description</button>
+      </form>
+      {% endif %}
       <form method="post" action="/jobs/{{ j.id }}/dismiss" class="inline">
-        <input type="hidden" name="csrf" value="{{ csrf }}">
-        <input type="hidden" name="view" value="{{ view }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="view" value="{{ view }}"><input type="hidden" name="sort" value="{{ sort }}">
         <button class="secondary">Dismiss</button>
       </form>
     </div>

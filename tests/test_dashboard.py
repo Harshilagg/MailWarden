@@ -359,3 +359,62 @@ def test_local_port_open():
         port = s.getsockname()[1]
         assert local_port_open(port)
     assert not local_port_open(port)
+
+
+class _Actions:
+    button_fetch_enabled = True
+
+    def __init__(self):
+        self.calls = []
+
+    def fetch(self, job_id):
+        self.calls.append(("fetch", job_id))
+        return "ok"
+
+    def paste(self, job_id, text):
+        self.calls.append(("paste", job_id, len(text)))
+        return "ok"
+
+    def fetch_top(self, ids):
+        self.calls.append(("top", ids))
+        return "ok"
+
+
+def test_jd_buttons_require_csrf_and_accept_long_pastes(env):
+    env.profile_loader = lambda: PROFILE
+    env.job_actions = _Actions()
+    _jobs(env)
+    c = client(env)
+    repo = env.repo_factory()
+    job_id = next(j.id for j in repo.list_jobs("local") if j.title == "Backend Engineer")
+    repo.close()
+    form = {"content-type": "application/x-www-form-urlencoded"}
+    for path in (f"/jobs/{job_id}/fetch-jd", f"/jobs/{job_id}/paste-jd", "/jobs/fetch-top"):
+        assert c.post(path, content="csrf=bad", headers=form).status_code == 403
+    long_jd = "Responsibilities " * 2000  # ~34 KB: allowed for pastes only
+    from urllib.parse import urlencode
+
+    r = c.post(f"/jobs/{job_id}/paste-jd", content=urlencode({"csrf": _csrf(env), "jd": long_jd, "view": "all"}),
+               headers=form)
+    assert r.status_code == 303 and r.headers["location"].startswith("/jobs?view=all&sort=score#job-")
+    assert c.post(f"/jobs/{job_id}/fetch-jd", content=f"csrf={_csrf(env)}", headers=form).status_code == 303
+    assert c.post(f"/jobs/{job_id}/dismiss", content=urlencode({"csrf": _csrf(env), "x": "y" * 5000}),
+                  headers=form).status_code == 403  # other forms keep the small limit
+    kinds = [c[0] for c in env.job_actions.calls]
+    assert kinds == ["paste", "fetch"]
+    html = c.get("/jobs?view=all").text
+    assert "Paste JD" in html and "Fetch JDs for top 10" in html and "LinkedIn pages can&#39;t be fetched" in html
+
+
+def test_scores_show_level_and_details(env):
+    env.profile_loader = lambda: PROFILE
+    _jobs(env)
+    repo = env.repo_factory()
+    job_id = next(j.id for j in repo.list_jobs("local") if j.title == "Backend Engineer")
+    repo.save_score("local", job_id, score=6.5, level="preliminary", input_hash="h",
+                    detail={"matched_skills": ["Go"], "missing_skills": ["Kafka"], "evidence": [],
+                            "best_project": "Observable Job Queue", "why": "Good Go overlap."})
+    repo.close()
+    html = client(env).get("/jobs").text
+    assert "6.5 · preliminary" in html and "Good Go overlap." in html
+    assert "Lead with: Observable Job Queue" in html and "Missing: Kafka" in html
