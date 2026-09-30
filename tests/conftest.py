@@ -67,6 +67,28 @@ def secret_store() -> SecretStore:
     return SecretStore(MemoryKeyring())
 
 
+@pytest.fixture(autouse=True)
+def _isolate_from_real_system(monkeypatch, tmp_path_factory):
+    """Tests must never touch the real keyring, real config or the real network.
+
+    - SecretStore() without an explicit backend gets a fresh in-memory keyring.
+    - MAILWARDEN_HOME points at an empty temp dir.
+    - Any real HTTP send (requests' HTTPAdapter) fails the test. Tests that need
+      HTTP mount a FakeTransport, which is not an HTTPAdapter.
+    """
+    import keyring as _keyring
+    from requests.adapters import HTTPAdapter
+
+    memory = MemoryKeyring()
+    monkeypatch.setattr(_keyring, "get_keyring", lambda: memory)
+    monkeypatch.setenv("MAILWARDEN_HOME", str(tmp_path_factory.mktemp("mailwarden-home")))
+
+    def no_real_network(self, request, *a, **k):
+        raise AssertionError(f"test attempted a real network request to {request.url}")
+
+    monkeypatch.setattr(HTTPAdapter, "send", no_real_network)
+
+
 # The zero-LLM-calls suite must never be skipped: a skip is reported as a failure.
 NEVER_SKIP_MODULES = {"test_zero_llm_sensitive"}
 

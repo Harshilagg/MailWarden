@@ -31,7 +31,19 @@ def test_demoting_sensitive_requires_confirmation(tmp_path, monkeypatch):
     assert load_sender_rules(home).tier_for("a@hdfcbank.net") is Tier.DEFAULT
 
 
-def test_dry_run_with_llm_not_yet_available(tmp_path, monkeypatch):
+def test_dry_run_with_llm_requires_groq_key(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("MAILWARDEN_HOME", str(tmp_path / "mw"))
     main(["init"])
+    from mailwarden.app import build_app
+    from mailwarden.core.models import Account, ProviderKind
+
+    app = build_app()
+    app.accounts.add(Account(user_id="local", name="x", provider=ProviderKind.GMAIL, address="a@b.com"))
     assert main(["dry-run", "--with-llm"]) == 2
+    assert "set-groq-key" in capsys.readouterr().err
+
+
+def test_tests_use_isolated_keyring():
+    from mailwarden.security.secrets import SecretKeys, SecretStore
+
+    assert SecretStore().get(SecretKeys.groq_api_key("local")) is None

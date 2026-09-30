@@ -86,8 +86,11 @@ class Runner:
         self._repo.mark_pending(uid, name, overflow)
         stats.pending += len(overflow)
 
-        for message_id in todo:
+        log.info("account %s: %d messages to process", name, len(todo))
+        for n, message_id in enumerate(todo, 1):
             self._process(account, provider, pipeline, message_id, stats)
+            if n % 10 == 0:
+                log.info("account %s: %d/%d done", name, n, len(todo))
         self._repo.set_sync_cursor(uid, name, result.cursor)
         log.info("account %s: %d new messages processed", name, len(todo))
 

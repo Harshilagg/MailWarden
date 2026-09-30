@@ -149,3 +149,19 @@ def test_invalid_message_id_rejected_before_request():
     with pytest.raises(ProviderError):
         p.get_message(ACCOUNT, "../../settings/filters")
     assert t.requests == []
+
+
+def test_html_inside_text_plain_is_converted():
+    html = '<html><body><div style="font-size:0.1px;"><img src="x">HIDDEN PREHEADER</div><p>Top companies are hiring</p></body></html>'
+    text, ok = extract_body({"mimeType": "text/plain", "body": {"data": b64(html)}})
+    assert ok and "Top companies are hiring" in text
+    assert "<html" not in text and "HIDDEN" not in text
+
+
+@pytest.mark.parametrize("style", ["font-size:1px", "font-size: 0.5pt", "line-height:0", "max-height:0px"])
+def test_tiny_or_collapsed_text_is_hidden(style):
+    assert "secret" not in html_to_text(f"<p>ok</p><span style='{style}'>secret</span>")
+
+
+def test_normal_font_sizes_kept():
+    assert "visible" in html_to_text("<span style='font-size:14px'>visible</span>")

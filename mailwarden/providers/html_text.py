@@ -17,7 +17,8 @@ _SKIP = frozenset("script style head title noscript template svg object iframe".
 _VOID = frozenset("area base br col embed hr img input link meta source track wbr".split())
 _HIDDEN_STYLE = re.compile(
     r"display\s*:\s*none|visibility\s*:\s*hidden|"
-    r"(?:font-size|max-height|height|opacity)\s*:\s*0(?![.\d])",
+    r"(?:max-height|height|opacity|line-height)\s*:\s*0(?![.\d])|"
+    r"font-size\s*:\s*(?:0(?:\.\d+)?|1)(?:px|pt)?(?![.\d])",
     re.IGNORECASE,
 )
 
@@ -78,3 +79,10 @@ def html_to_text(html: str) -> str:
     except Exception as e:
         raise HtmlParseError("could not parse HTML body") from e
     return _normalise("".join(parser.parts))
+
+
+_LOOKS_LIKE_HTML = re.compile(r"<\s*(?:html|body|div|table|p|br|span|img)\b[^>]*>", re.IGNORECASE)
+
+
+def looks_like_html(text: str) -> bool:
+    return len(_LOOKS_LIKE_HTML.findall(text[:5000])) >= 2

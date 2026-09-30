@@ -76,7 +76,8 @@ emails. It runs on every test run, and a skip is reported as a failure.
 
 ## Redaction
 
-SAFE mail is redacted before classification: email addresses, phone numbers,
+SAFE mail is redacted before classification. Newsletter and legal footers
+(unsubscribe, privacy policy, "you are receiving this" and similar) are dropped first. Then email addresses, phone numbers,
 every run of 4 or more digits, URLs (reduced to `[LINK:domain]`), and anything
 resembling a token, key, password or ID number are removed. The text is then
 cut to the subject plus the first `llm.max_body_chars` (default 1500)

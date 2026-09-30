@@ -19,7 +19,7 @@ from typing import Any
 from mailwarden.core.models import Account, FetchedMessage, ProviderKind
 from mailwarden.providers.base import MailProvider, ProviderError, SyncResult
 from mailwarden.providers.google_oauth import GoogleCredentials
-from mailwarden.providers.html_text import HtmlParseError, html_to_text
+from mailwarden.providers.html_text import HtmlParseError, html_to_text, looks_like_html
 from mailwarden.security.net import AllowlistedSession
 
 log = logging.getLogger(__name__)
@@ -86,10 +86,12 @@ def extract_body(payload: dict[str, Any]) -> tuple[str, bool]:
             plain.append(_decode(data, _charset(part)))
         elif mime == "text/html":
             html.append(_decode(data, _charset(part)))
-    if plain:
-        return "\n".join(plain).strip()[:_MAX_BODY_CHARS], True
+    joined = "\n".join(plain).strip()
+    if plain and not looks_like_html(joined):
+        return joined[:_MAX_BODY_CHARS], True
     try:
-        return html_to_text("\n".join(html))[:_MAX_BODY_CHARS], True
+        # Some senders put HTML in the text/plain part; treat it as HTML.
+        return html_to_text(joined if plain else "\n".join(html))[:_MAX_BODY_CHARS], True
     except HtmlParseError:
         return "", False
 

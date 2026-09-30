@@ -29,6 +29,8 @@ def test_ordinary_mail_passes(case):
         "The coding round lasts 90 minutes",
         "Offer letter attached, CTC 18 LPA",
         "Pan-India hiring drive",
+        "Test ID 919876543210 for your HackerEarth challenge",
+        "Call us at 1800 1234 5678",
     ],
 )
 def test_job_phrasing_does_not_trip(text):
@@ -54,7 +56,7 @@ def test_job_phrasing_does_not_trip(text):
         ("Re-KYC due", "kyc"),
         ("PAN ABCDE1234F", "pan"),
         ("Aadhar linked", "aadhaar"),
-        ("1234 5678 9012", "aadhaar_number"),
+        ("2345 6789 0123", "aadhaar_number"),
         ("Form 16 for FY", "tax"),
         ("Your seed phrase", "crypto_secret"),
         ("verify with 5521", "code_near_number"),

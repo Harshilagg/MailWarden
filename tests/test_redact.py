@@ -75,3 +75,18 @@ def test_for_llm_shape_and_sender_address_dropped():
     text = for_llm(msg, max_body_chars=1500)
     assert text.startswith("From domain: acme.com\nSubject: Interview\n\n")
     assert "recruiter.jane" not in text and "Jane" not in text
+
+
+def test_footer_is_stripped_before_sending():
+    from mailwarden.core.redact import strip_footer
+
+    body = "Your interview with Acme is on Oct 3. " * 8 + "\nUnsubscribe here\nPrivacy Policy\nAcme Inc, 1 Road"
+    out = strip_footer(body)
+    assert "Unsubscribe" not in out and "Privacy" not in out and "interview with Acme" in out
+
+
+def test_short_mail_keeps_its_footer_words():
+    from mailwarden.core.redact import strip_footer
+
+    body = "Unsubscribe from my list? lol\nsee you"
+    assert strip_footer(body) == body

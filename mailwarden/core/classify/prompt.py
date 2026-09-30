@@ -51,14 +51,19 @@ Redaction: placeholders like [EMAIL], [PHONE], [NUM], [TOKEN], [LINK:domain],
 future date relative to today.
 
 Fields:
-- category: "job" for anything about the user's own job applications, recruiting,
-  assessments, interviews, offers or rejections. Generic job-board alerts and
-  newsletters are "newsletter". Otherwise "personal", "notification" or "other".
+- category: "job" ONLY for the user's own applications and hiring processes:
+  application confirmations, assessments, interviews, offers, rejections, and
+  recruiters writing to the user personally about a specific role.
+  Job-board alerts, "jobs you may like", job matches/recommendations (LinkedIn,
+  Indeed, Naukri, foundit, Internshala, company talent-network alerts), and
+  career newsletters are "newsletter", even if they name a role or say "apply".
+  Otherwise "personal", "notification" or "other".
 - company, role: the hiring company and job title if stated, else null.
 - stage (job mail only, else null): "applied" (application received), "assessment"
   (test/assignment), "interview", "offer", "rejection", or "other".
-- action_required: true only if the user must do something (book a slot, take a test,
-  reply, sign, submit).
+- action_required: true only if the user must do something in an ongoing process
+  (book a slot, take a test, reply, sign, submit documents). Always false for
+  newsletters, promotions, offers/discounts and job alerts.
 - deadline: YYYY-MM-DD if a deadline or scheduled date is stated, else null.
 - summary: neutral, at most {SUMMARY_MAX_WORDS} words, no placeholders, no links."""
 

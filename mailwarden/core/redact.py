@@ -32,6 +32,21 @@ _ID_FORMATS = re.compile(r"\b[A-Z]{5}\d{4}[A-Z]\b|\b[A-Z]{4}0[A-Z0-9]{6}\b")
 _NUMBERISH = re.compile(r"\+?\(?\d(?:[\s().-]{0,2}\d)+")
 _DATE_SHAPES = re.compile(r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[.-]\d{1,2}[.-]\d{2,4}")
 _DIGIT_RUN = re.compile(r"\d{4,}")
+_FOOTER = re.compile(
+    r"(?im)^[^\S\n]*(?:[-_*=|]+[^\S\n]*)?(?:to\s+)?(?:unsubscribe\b|manage\s+(?:your\s+)?(?:e-?mail|job\s+alert|notification|subscription)"
+    r"|you\s+(?:are\s+)?receiv(?:ing|ed)\s+(?:this|these)|this\s+(?:e-?mail|message)\s+was\s+(?:sent|intended)"
+    r"|privacy\s+policy|terms\s*(?:and|&)\s*conditions|disclaimer\b|©|copyright\b|download\s+(?:our|the)\s+app"
+    r"|if\s+you\s+(?:no\s+longer|don'?t)\s+want|view\s+(?:this\s+)?(?:e-?mail\s+)?in\s+(?:your\s+)?browser)"
+)
+_MIN_KEEP = 200
+
+
+def strip_footer(text: str) -> str:
+    """Drop newsletter/legal footers: fewer tokens and less data leaving the machine."""
+    for m in _FOOTER.finditer(text):
+        if m.start() >= _MIN_KEEP:
+            return text[: m.start()].rstrip()
+    return text
 
 
 def _link(m: re.Match[str]) -> str:
@@ -94,6 +109,6 @@ def _cut(text: str, limit: int) -> str:
 def for_llm(msg: FetchedMessage, max_body_chars: int) -> str:
     """The exact text an LLM would receive for this (already gated SAFE) message."""
     subject = _cut(redact_text(msg.subject), 300)
-    body = _cut(redact_text(msg.body_text), max_body_chars)
+    body = _cut(redact_text(strip_footer(msg.body_text)), max_body_chars)
     domain = msg.sender_domain or "unknown"
     return f"From domain: {domain}\nSubject: {subject}\n\n{body}"

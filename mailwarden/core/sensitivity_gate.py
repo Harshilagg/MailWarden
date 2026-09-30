@@ -96,7 +96,8 @@ PATTERNS: dict[str, re.Pattern[str]] = {
 FORMAT_PATTERNS: dict[str, re.Pattern[str]] = {
     "pan": re.compile(r"\bPAN\b(?![\s-]*(?:India|INDIA|india)\b)|\b[A-Z]{5}\d{4}[A-Z]\b"),
     "ifsc_code": re.compile(r"\b[A-Z]{4}0[A-Z0-9]{6}\b"),
-    "aadhaar_number": re.compile(r"(?<![\d.,])\d{4}[\s-]?\d{4}[\s-]?\d{4}(?![\d.,])"),
+    # Aadhaar is written as 4-4-4 groups and never starts with 0 or 1.
+    "aadhaar_number": re.compile(r"(?<![\d.,])[2-9]\d{3}[\s-]\d{4}[\s-]\d{4}(?![\d.,])"),
 }
 
 # A sender display name that names a bank/payment brand. Skipped when the
