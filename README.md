@@ -106,6 +106,8 @@ To stay fully local instead, install Ollama, `ollama pull qwen2.5:3b`, and set
 | `mailwarden forget-account <n>` | Revoke token at Google, delete it from the keyring, delete the account's stored data |
 
 | `mailwarden dashboard [--open]` | Start the local dashboard on `127.0.0.1:8765` and print a one-time sign-in link |
+| `mailwarden app [--path /jobs]` | Open the dashboard in its own native window (macOS; WebKit, no browser) |
+| `mailwarden launcher [--browser]` | Create `~/Applications/mailwarden.app` for the Dock/Spotlight (native window, or your browser with `--browser`) |
 | `mailwarden open [--print-only]` | Open a fresh one-time sign-in link to the running dashboard |
 | `mailwarden digest` | Build the digest now (shown on the dashboard; optional Markdown copy) |
 | `mailwarden regate [--days 7] [--apply]` | Re-check stored mail with the current gate and rules and print a per-sender breakdown (no LLM calls). `--apply` reprocesses emails whose outcome changed |
@@ -134,6 +136,11 @@ Add `--quiet` before any command for warnings-only output (used by scheduled job
 - **Digest**: the latest digest, grouped by category, with one-line summaries.
 - **Sensitive**: counts by sender only.
 - **Settings**: the classifier, allowed outbound hosts, accounts and sender tiers (read-only).
+
+**As an app:** run `mailwarden launcher` once and drag `~/Applications/mailwarden.app`
+to the Dock. Clicking it opens the dashboard in its own window (macOS WebKit, not a
+browser). It uses the background dashboard if it's running, otherwise it serves one
+while the window is open. "Open in Gmail" and job links open in your default browser.
 
 The dashboard only listens on 127.0.0.1 and has no external assets or JavaScript.
 Signing in uses a one-time link (valid 10 minutes). After that a cookie keeps you

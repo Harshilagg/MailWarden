@@ -208,6 +208,15 @@ keyring.
 - "Open in Gmail" is a link your browser follows. mailwarden itself makes no
   request to `mail.google.com`.
 
+## Desktop window (macOS)
+
+`mailwarden app` shows the dashboard in a native WebKit window (pywebview). The
+window loads only `http://127.0.0.1:<port>`. It exposes no JavaScript bridge to
+Python, developer tools and downloads are off, and it runs in private mode, so
+no cookies or site data are written to disk; each launch signs in with a fresh
+one-time code. Links that open in a new tab go to the default browser. The
+dashboard's security headers and CSP apply unchanged.
+
 ## Notifications
 
 Notifications are local. They show only company, stage and deadline, or

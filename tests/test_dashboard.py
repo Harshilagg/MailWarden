@@ -288,3 +288,39 @@ def test_logo_and_favicon_served_without_login(env):
 def test_pages_reference_local_logo_only(env):
     html = client(env).get("/").text
     assert 'rel="icon" type="image/png" href="/static/logo-64.png"' in html and 'src="/static/logo-64.png"' in html
+
+
+
+@pytest.mark.parametrize(
+    "next_path, expected",
+    [
+        ("/jobs", "/jobs"),
+        ("/jobs?match=1", "/jobs?match=1"),
+        ("/i/personal/job1", "/i/personal/job1"),
+        ("//evil.example.com", "/"),
+        ("https://evil.example.com", "/"),
+        ("/\\evil.example.com", "/"),
+        ("/%2F%2Fevil.example.com", "/"),
+        ("javascript:alert(1)", "/"),
+    ],
+)
+def test_login_next_only_redirects_to_local_paths(env, next_path, expected):
+    from urllib.parse import quote
+
+    c = client(env, logged_in=False)
+    code = auth.issue_login_code(env.secrets, "local")
+    r = c.get(f"/login?code={code}&next={quote(next_path, safe='')}")
+    assert r.status_code == 303 and r.headers["location"] == expected
+
+
+def test_local_port_open():
+    import socket
+
+    from mailwarden.security.net import local_port_open
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        s.listen(1)
+        port = s.getsockname()[1]
+        assert local_port_open(port)
+    assert not local_port_open(port)

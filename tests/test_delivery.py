@@ -198,29 +198,39 @@ def test_install_commands_quote_paths_and_have_no_comment_lines(tmp_path):
     assert "'" in systemd_instructions(out)
 
 
-def test_launcher_script_quotes_paths_and_runs_only_open(tmp_path, monkeypatch):
-    from mailwarden import launcher
+def test_launcher_bundle(tmp_path, monkeypatch):
+    import plistlib as _plistlib
+    import shlex as _shlex
 
-    script = launcher.applescript('/Users/x/My "Apps"/py', tmp_path / "Application Support" / "mw")
-    assert 'quoted form of py' in script and 'quoted form of mwhome' in script
-    assert '\\"Apps\\"' in script  # embedded quotes escaped for AppleScript
-    assert script.count("do shell script") == 1 and "-m mailwarden --quiet open" in script
-
-    calls = []
-    monkeypatch.setattr(launcher.sys, "platform", "darwin")
-    app = launcher.build(tmp_path, "/py", tmp_path, run=lambda argv, **kw: calls.append(argv))
-    assert app == tmp_path / "mailwarden.app"
-    assert calls[0][:3] == ["/usr/bin/osacompile", "-o", str(app)]
-
-
-def test_launcher_gets_the_logo_icon(tmp_path, monkeypatch):
     from mailwarden import launcher
 
     monkeypatch.setattr(launcher.sys, "platform", "darwin")
+    home = tmp_path / "Application Support" / "mw"
+    app = launcher.build(tmp_path, "/Users/x/My Apps/python", home, run=lambda *a, **k: None)
+    info = _plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
+    assert info["CFBundleExecutable"] == "mailwarden" and info["CFBundleIconFile"] == "mailwarden"
+    assert info["CFBundleIdentifier"] == "com.mailwarden.app"
+    exe = app / "Contents" / "MacOS" / "mailwarden"
+    assert exe.stat().st_mode & 0o111
+    lines = exe.read_text().splitlines()
+    assert lines[0] == "#!/bin/sh"
+    assert _shlex.split(lines[1]) == ["export", f"MAILWARDEN_HOME={home}"]
+    assert _shlex.split(lines[2]) == ["exec", "/Users/x/My Apps/python", "-m", "mailwarden", "--quiet", "app"]
+    assert (app / "Contents" / "Resources" / "mailwarden.icns").read_bytes()[:4] == b"icns"
 
-    def fake_osacompile(argv, **kw):
-        (tmp_path / "mailwarden.app" / "Contents" / "Resources").mkdir(parents=True)
 
-    app = launcher.build(tmp_path, "/py", tmp_path, run=fake_osacompile)
-    icon = app / "Contents" / "Resources" / "applet.icns"
-    assert icon.read_bytes()[:4] == b"icns"
+def test_launcher_browser_mode_and_rebuild(tmp_path, monkeypatch):
+    from mailwarden import launcher
+
+    monkeypatch.setattr(launcher.sys, "platform", "darwin")
+    launcher.build(tmp_path, "/py", tmp_path, run=lambda *a, **k: None)
+    app = launcher.build(tmp_path, "/py", tmp_path, browser=True, run=lambda *a, **k: None)  # replaces cleanly
+    assert "--quiet open" in (app / "Contents" / "MacOS" / "mailwarden").read_text()
+
+
+def test_launcher_refuses_other_platforms(tmp_path, monkeypatch):
+    from mailwarden import launcher
+
+    monkeypatch.setattr(launcher.sys, "platform", "linux")
+    with pytest.raises(RuntimeError):
+        launcher.build(tmp_path, "/py", tmp_path)

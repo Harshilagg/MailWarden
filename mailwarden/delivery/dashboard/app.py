@@ -33,6 +33,7 @@ from mailwarden.storage.base import AccountRegistry, Repository
 
 _SLUG = re.compile(SLUG_PATTERN)
 _MSG_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_NEXT = re.compile(r"^/(?!/)[A-Za-z0-9/_\-]*(?:\?[A-Za-z0-9=&_\-]*)?$")
 _PUBLIC_PATHS = {"/login", "/static/style.css", "/static/logo-64.png", "/static/logo-180.png", "/favicon.ico"}
 STAGE_COLUMNS = (Stage.APPLIED, Stage.ASSESSMENT, Stage.INTERVIEW, Stage.OFFER, Stage.REJECTION, Stage.OTHER)
 
@@ -147,10 +148,12 @@ def create_app(deps: DashboardDeps) -> FastAPI:
         return Response(logos["logo-64.png"], media_type="image/png")
 
     @app.get("/login")
-    def login(request: Request, code: str = "") -> Response:
+    def login(request: Request, code: str = "", next: str = "/") -> Response:
         if not auth.redeem_login_code(deps.secrets, deps.user_id, code):
             return render("login.html", request, status_code=401, expired=bool(code))
-        response = RedirectResponse("/", status_code=303)
+        # Only same-site local paths: never an open redirect.
+        target = next if len(next) <= 200 and _NEXT.match(next) else "/"
+        response = RedirectResponse(target, status_code=303)
         response.set_cookie(auth.COOKIE_NAME, token, max_age=auth.COOKIE_MAX_AGE, httponly=True,
                             samesite="strict", path="/")
         return response

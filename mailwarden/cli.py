@@ -216,10 +216,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
-def _login_url(app: App) -> str:
+def _login_url(app: App, next_path: str = "/") -> str:
+    from urllib.parse import quote
+
     from mailwarden.delivery.dashboard.auth import issue_login_code
 
-    return f"{app.dashboard_url()}/login?code={issue_login_code(app.secrets, app.user_id)}"
+    url = f"{app.dashboard_url()}/login?code={issue_login_code(app.secrets, app.user_id)}"
+    return url if next_path == "/" else f"{url}&next={quote(next_path, safe='/')}"
 
 
 def cmd_dashboard(args: argparse.Namespace) -> int:
@@ -234,6 +237,35 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
         if args.open:
             webbrowser.open(url)
     serve(web, host=app.settings.dashboard.host, port=app.settings.dashboard.port)
+    return 0
+
+
+def cmd_app(args: argparse.Namespace) -> int:
+    """Open the dashboard in its own native window (macOS); falls back to the browser elsewhere."""
+    import time
+
+    from mailwarden.security.net import local_port_open
+
+    app = build_app()
+    port = app.settings.dashboard.port
+    if not local_port_open(port):
+        # No background dashboard agent: serve it from this process while the window is open.
+        from mailwarden.delivery.dashboard.server import serve_in_background
+
+        serve_in_background(app.dashboard_app(), host=app.settings.dashboard.host, port=port)
+        for _ in range(100):
+            if local_port_open(port):
+                break
+            time.sleep(0.1)
+        else:
+            raise UsageError(f"could not start the dashboard on 127.0.0.1:{port}")
+    url = _login_url(app, args.path or "/")
+    if sys.platform != "darwin":
+        webbrowser.open(url)
+        return 0
+    from mailwarden.delivery.desktop_app import open_window
+
+    open_window(url)
     return 0
 
 
@@ -331,9 +363,10 @@ def cmd_launcher(args: argparse.Namespace) -> int:
 
     app = build_app()
     target = Path(args.dir).expanduser() if args.dir else launcher.default_dir()
-    path = launcher.build(target, sys.executable, app.home)
+    path = launcher.build(target, sys.executable, app.home, browser=args.browser)
     print(f"Created {path}")
-    print("Drag it to your Dock, or press ⌘Space and type 'mailwarden'. Clicking it opens the dashboard.")
+    where = "your default browser" if args.browser else "its own window"
+    print(f"Drag it to your Dock, or press ⌘Space and type 'mailwarden'. It opens the dashboard in {where}.")
     return 0
 
 
@@ -409,11 +442,15 @@ def build_parser() -> argparse.ArgumentParser:
     db = sub.add_parser("dashboard", help="start the local dashboard on 127.0.0.1")
     db.add_argument("--open", action="store_true", help="open the one-time sign-in link in your browser")
     db.set_defaults(func=cmd_dashboard)
+    ap = sub.add_parser("app", help="open the dashboard in its own window (macOS)")
+    ap.add_argument("--path", help="dashboard page to open, e.g. /jobs")
+    ap.set_defaults(func=cmd_app)
     op = sub.add_parser("open", help="open a one-time sign-in link to the running dashboard")
     op.add_argument("--print-only", action="store_true", help="print the link instead of opening it")
     op.set_defaults(func=cmd_open)
     la = sub.add_parser("launcher", help="create a macOS app (Dock/Spotlight) that opens the dashboard")
     la.add_argument("--dir", help="where to put mailwarden.app (default ~/Applications)")
+    la.add_argument("--browser", action="store_true", help="open in your browser instead of a native window")
     la.set_defaults(func=cmd_launcher)
     rg = sub.add_parser("regate", help="re-check stored mail with the current gate/rules; per-sender breakdown")
     rg.add_argument("--days", type=int, default=7)

@@ -11,6 +11,8 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
+import socket
+
 import requests
 
 if TYPE_CHECKING:
@@ -79,3 +81,12 @@ class AllowlistedSession(requests.Session):
             raise EgressBlocked("TLS verification must stay on (custom verify values are rejected)")
         kwargs["verify"] = True
         return super().send(request, **kwargs)
+
+
+def local_port_open(port: int, timeout: float = 0.5) -> bool:
+    """True if something is listening on 127.0.0.1:<port>. Loopback only."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except OSError:
+        return False
