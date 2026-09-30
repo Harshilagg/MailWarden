@@ -326,6 +326,17 @@ def cmd_regate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_launcher(args: argparse.Namespace) -> int:
+    from mailwarden import launcher
+
+    app = build_app()
+    target = Path(args.dir).expanduser() if args.dir else launcher.default_dir()
+    path = launcher.build(target, sys.executable, app.home)
+    print(f"Created {path}")
+    print("Drag it to your Dock, or press ⌘Space and type 'mailwarden'. Clicking it opens the dashboard.")
+    return 0
+
+
 def cmd_set_groq_key(args: argparse.Namespace) -> int:
     app = build_app()
     key = getpass.getpass("Groq API key (input hidden): ").strip()
@@ -401,6 +412,9 @@ def build_parser() -> argparse.ArgumentParser:
     op = sub.add_parser("open", help="open a one-time sign-in link to the running dashboard")
     op.add_argument("--print-only", action="store_true", help="print the link instead of opening it")
     op.set_defaults(func=cmd_open)
+    la = sub.add_parser("launcher", help="create a macOS app (Dock/Spotlight) that opens the dashboard")
+    la.add_argument("--dir", help="where to put mailwarden.app (default ~/Applications)")
+    la.set_defaults(func=cmd_launcher)
     rg = sub.add_parser("regate", help="re-check stored mail with the current gate/rules; per-sender breakdown")
     rg.add_argument("--days", type=int, default=7)
     rg.add_argument("--apply", action="store_true", help="reprocess emails whose outcome changed (uses the LLM)")

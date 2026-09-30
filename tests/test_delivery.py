@@ -196,3 +196,18 @@ def test_install_commands_quote_paths_and_have_no_comment_lines(tmp_path):
             assert len(_shlex.split(line)) == 3  # the spaced path stays one argument
     assert "launchctl bootout gui/$(id -u)/com.mailwarden.dashboard" in text
     assert "'" in systemd_instructions(out)
+
+
+def test_launcher_script_quotes_paths_and_runs_only_open(tmp_path, monkeypatch):
+    from mailwarden import launcher
+
+    script = launcher.applescript('/Users/x/My "Apps"/py', tmp_path / "Application Support" / "mw")
+    assert 'quoted form of py' in script and 'quoted form of mwhome' in script
+    assert '\\"Apps\\"' in script  # embedded quotes escaped for AppleScript
+    assert script.count("do shell script") == 1 and "-m mailwarden --quiet open" in script
+
+    calls = []
+    monkeypatch.setattr(launcher.sys, "platform", "darwin")
+    app = launcher.build(tmp_path, "/py", tmp_path, run=lambda argv, **kw: calls.append(argv))
+    assert app == tmp_path / "mailwarden.app"
+    assert calls[0][:3] == ["/usr/bin/osacompile", "-o", str(app)]
