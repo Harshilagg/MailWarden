@@ -46,7 +46,14 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "two_factor": _ci(
         r"\b(?:2fa|mfa|two[\s-]*factor|2[\s-]*step|two[\s-]*step|multi[\s-]*factor)\b"
     ),
-    "do_not_share": _ci(r"\b(?:do\s*not|don'?t|never|not\s+to)\s+(?:share|disclose|reveal)\b"),
+    # share/forward/disclose within ~6 words of a secret word, either order.
+    # Generic footers ("do not forward this email") do not fire.
+    "do_not_share": _ci(
+        r"\b(?:share|sharing|forward|disclose|reveal)\b(?:\W+\w+){0,6}?\W+"
+        r"(?:[o0]tp|codes?|passwords?|pass\s?codes?|pins?|m-?pin|cvv)\b"
+        r"|\b(?:[o0]tp|codes?|passwords?|pass\s?codes?|pins?|m-?pin|cvv)\b(?:\W+\w+){0,6}?\W+"
+        r"(?:share|sharing|forward|disclose|reveal)\b"
+    ),
     "password": _ci(
         r"\b(?:password|passcode|pin)\s+(?:reset|change[ds]?|recovery|expir\w*)\b"
         r"|\breset\s+(?:your\s+|the\s+)?(?:password|pin)\b|\bforgot\s+(?:your\s+)?password\b"
@@ -94,11 +101,49 @@ PATTERNS: dict[str, re.Pattern[str]] = {
 
 # Case-sensitive formats, matched against folded text without lowercasing.
 FORMAT_PATTERNS: dict[str, re.Pattern[str]] = {
-    "pan": re.compile(r"\bPAN\b(?![\s-]*(?:India|INDIA|india)\b)|\b[A-Z]{5}\d{4}[A-Z]\b"),
     "ifsc_code": re.compile(r"\b[A-Z]{4}0[A-Z0-9]{6}\b"),
-    # Aadhaar is written as 4-4-4 groups and never starts with 0 or 1.
-    "aadhaar_number": re.compile(r"(?<![\d.,])[2-9]\d{3}[\s-]\d{4}[\s-]\d{4}(?![\d.,])"),
 }
+
+_PAN_NUMBER = re.compile(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b")
+_PAN_WORD = re.compile(r"\bPAN\b|\bpermanent\s+account\s+number\b", re.IGNORECASE)
+_AADHAAR_CANDIDATE = re.compile(r"(?<![\d.,])([2-9]\d{3})[\s-]?(\d{4})[\s-]?(\d{4})(?![\d.,])")
+_AADHAAR_WORD = re.compile(r"\baa?dh?aa?r\b|\buidai?\b", re.IGNORECASE)
+_NEAR = 50
+
+# Verhoeff checksum tables (Aadhaar numbers carry a Verhoeff check digit).
+_VD = (
+    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9), (1, 2, 3, 4, 0, 6, 7, 8, 9, 5), (2, 3, 4, 0, 1, 7, 8, 9, 5, 6),
+    (3, 4, 0, 1, 2, 8, 9, 5, 6, 7), (4, 0, 1, 2, 3, 9, 5, 6, 7, 8), (5, 9, 8, 7, 6, 0, 4, 3, 2, 1),
+    (6, 5, 9, 8, 7, 1, 0, 4, 3, 2), (7, 6, 5, 9, 8, 2, 1, 0, 4, 3), (8, 7, 6, 5, 9, 3, 2, 1, 0, 4),
+    (9, 8, 7, 6, 5, 4, 3, 2, 1, 0),
+)
+_VP = (
+    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9), (1, 5, 7, 6, 2, 8, 3, 0, 9, 4), (5, 8, 0, 3, 7, 9, 6, 1, 4, 2),
+    (8, 9, 1, 6, 0, 4, 3, 5, 2, 7), (9, 4, 5, 3, 1, 2, 6, 8, 7, 0), (4, 2, 8, 6, 5, 7, 3, 9, 0, 1),
+    (2, 7, 9, 3, 8, 0, 6, 4, 1, 5), (7, 0, 4, 6, 9, 1, 3, 2, 5, 8),
+)
+
+
+def verhoeff_valid(digits: str) -> bool:
+    c = 0
+    for i, ch in enumerate(reversed(digits)):
+        c = _VD[c][_VP[i % 8][int(ch)]]
+    return c == 0
+
+
+def _word_near(text: str, start: int, end: int, word: re.Pattern[str]) -> bool:
+    return bool(word.search(text[max(0, start - _NEAR) : end + _NEAR]))
+
+
+def _aadhaar_number(text: str) -> bool:
+    for m in _AADHAAR_CANDIDATE.finditer(text):
+        if verhoeff_valid("".join(m.groups())) and _word_near(text, m.start(), m.end(), _AADHAAR_WORD):
+            return True
+    return False
+
+
+def _pan_number(text: str) -> bool:
+    return any(_word_near(text, m.start(), m.end(), _PAN_WORD) for m in _PAN_NUMBER.finditer(text))
 
 # A sender display name that names a bank/payment brand. Skipped when the
 # user has explicitly put the sender in PRIORITY (e.g. a fintech's recruiter).
@@ -139,12 +184,20 @@ def scan_text(text: str) -> tuple[str, ...]:
     folded = fold(text)
     hits = [name for name, p in PATTERNS.items() if p.search(folded)]
     hits += [name for name, p in FORMAT_PATTERNS.items() if p.search(folded)]
+    if _pan_number(folded):
+        hits.append("pan")
+    if _aadhaar_number(folded):
+        hits.append("aadhaar_number")
     if _code_near_number(folded):
         hits.append("code_near_number")
     return tuple(hits)
 
 
-def evaluate(msg: FetchedMessage, tier: Tier) -> GateResult:
+def evaluate(msg: FetchedMessage, tier: Tier, *, sender_override: bool = False) -> GateResult:
+    """``sender_override``: a recruiting override applies, so skip sender-based heuristics.
+
+    Content rules always apply.
+    """
     try:
         reasons: list[str] = []
         if tier is Tier.SENSITIVE:
@@ -153,7 +206,7 @@ def evaluate(msg: FetchedMessage, tier: Tier) -> GateResult:
             reasons.append("unparsed_content")
         if "@" not in msg.sender_address:
             reasons.append("unknown_sender")
-        if tier is not Tier.PRIORITY and SENDER_NAME.search(fold(msg.sender_name)):
+        if tier is not Tier.PRIORITY and not sender_override and SENDER_NAME.search(fold(msg.sender_name)):
             reasons.append("sender_name")
         reasons.extend(scan_text(f"{msg.sender_name}\n{msg.subject}\n{msg.body_text}"))
         if reasons:

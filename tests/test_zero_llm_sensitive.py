@@ -74,7 +74,7 @@ def test_gate_error_fails_closed(monkeypatch):
 
 def test_rules_error_fails_closed():
     rules = MagicMock(spec=SenderRules)
-    rules.tier_for.side_effect = RuntimeError("bad rules")
+    rules.match.side_effect = RuntimeError("bad rules")
     llm = MagicMock(spec=LLMBackend)
     p = Pipeline(rules, max_body_chars=1500, llm=llm)
     t = p.triage(make("friend@gmail.com", "Friend", "hi", "hello"))

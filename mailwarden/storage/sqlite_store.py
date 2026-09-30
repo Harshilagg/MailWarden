@@ -29,7 +29,16 @@ from mailwarden.security.fs import check_private, ensure_private_dir
 from mailwarden.security.secrets import SecretKeys, SecretStore
 from mailwarden.storage.base import ApplicationEvent, Repository
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+# Columns added after v1: (name, SQL type). Applied with ALTER TABLE on open.
+_MESSAGE_COLUMNS_V2 = (
+    ("classified_by", "TEXT"),
+    ("held_reason", "TEXT"),
+    ("held_job", "INTEGER NOT NULL DEFAULT 0"),
+    ("held_company", "TEXT"),
+    ("held_stage", "TEXT"),
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -124,13 +133,22 @@ class SQLCipherRepository(Repository):
         self._db.execute("PRAGMA foreign_keys = ON")
         self._db.execute("PRAGMA secure_delete = ON")
         self._db.executescript(_SCHEMA)
-        self._db.execute(
-            "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),)
-        )
+        self._migrate()
         for suffix in ("-journal", "-wal", "-shm"):
             side = Path(str(path) + suffix)
             if side.exists():
                 os.chmod(side, 0o600)
+
+    def _migrate(self) -> None:
+        existing = {r[1] for r in self._db.execute("PRAGMA table_info(messages)")}
+        for name, sql_type in _MESSAGE_COLUMNS_V2:
+            if name not in existing:
+                self._db.execute(f"ALTER TABLE messages ADD COLUMN {name} {sql_type}")
+        self._db.execute(
+            "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
+            "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            (str(SCHEMA_VERSION),),
+        )
 
     @classmethod
     def open(cls, path: Path, secrets_store: SecretStore, user_id: str) -> SQLCipherRepository:
@@ -178,14 +196,17 @@ class SQLCipherRepository(Repository):
         sensitive = meta.gate is GateDecision.SENSITIVE
         self._db.execute(
             "INSERT INTO messages (user_id, account, message_id, status, sender_address, sender_name, "
-            "received_at, tier, gate, category, company, role, stage, action_required, deadline, summary, processed_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "received_at, tier, gate, category, company, role, stage, action_required, deadline, summary, processed_at, "
+            "classified_by, held_reason, held_job, held_company, held_stage) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (user_id, account, message_id) DO UPDATE SET "
             "status = excluded.status, sender_address = excluded.sender_address, sender_name = excluded.sender_name, "
             "received_at = excluded.received_at, tier = excluded.tier, gate = excluded.gate, "
             "category = excluded.category, company = excluded.company, role = excluded.role, stage = excluded.stage, "
             "action_required = excluded.action_required, deadline = excluded.deadline, summary = excluded.summary, "
-            "processed_at = excluded.processed_at "
+            "processed_at = excluded.processed_at, classified_by = excluded.classified_by, "
+            "held_reason = excluded.held_reason, held_job = excluded.held_job, "
+            "held_company = excluded.held_company, held_stage = excluded.held_stage "
             "WHERE messages.status = 'pending'",
             (
                 meta.user_id,
@@ -205,6 +226,11 @@ class SQLCipherRepository(Repository):
                 c.deadline.isoformat() if c and c.deadline else None,
                 c.summary if c else None,
                 _now(),
+                meta.classified_by,
+                meta.held_reason if sensitive else None,
+                int(meta.held_job),
+                meta.held_company if sensitive else None,
+                meta.held_stage.value if sensitive and meta.held_stage else None,
             ),
         )
 
@@ -227,7 +253,8 @@ class SQLCipherRepository(Repository):
     def list_email_meta(self, user_id: str, since: dt.datetime | None = None) -> list[EmailMeta]:
         sql = (
             "SELECT account, message_id, status, sender_address, sender_name, received_at, tier, gate, "
-            "category, company, role, stage, action_required, deadline, summary "
+            "category, company, role, stage, action_required, deadline, summary, "
+            "classified_by, held_reason, held_job, held_company, held_stage "
             "FROM messages WHERE user_id = ? AND status != 'pending'"
         )
         args: list[object] = [user_id]
@@ -251,6 +278,8 @@ class SQLCipherRepository(Repository):
                     user_id=user_id, account=r[0], message_id=r[1], status=MessageStatus(r[2]),
                     sender_address=r[3], sender_name=r[4] or "", received_at=dt.datetime.fromisoformat(r[5]),
                     tier=Tier(r[6]), gate=GateDecision(r[7]), classification=classification,
+                    classified_by=r[15], held_reason=r[16], held_job=bool(r[17]), held_company=r[18],
+                    held_stage=Stage(r[19]) if r[19] else None,
                 )
             )
         return out

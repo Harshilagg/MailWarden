@@ -191,36 +191,52 @@ def test_injected_email_cannot_change_what_the_code_accepts():
     assert len(t.requests) == 1  # no follow-up requests of any kind
 
 
-# --- token-aware pacing ------------------------------------------------------
+# --- local rate limiting ---------------------------------------------------
 
-from mailwarden.core.classify.groq import estimate_tokens, parse_duration  # noqa: E402
-
-
-@pytest.mark.parametrize(
-    "raw, seconds",
-    [("4.702s", 4.702), ("1m26.4s", 86.4), ("1h13m26.4s", 4406.4), ("250ms", 0.25), ("", None), ("soon", None)],
-)
-def test_parse_duration(raw, seconds):
-    assert parse_duration(raw) == (pytest.approx(seconds) if seconds is not None else None)
+from mailwarden.core.classify.ratelimit import CallBudgetExhausted, RateLimitedBackend, TokenBucket  # noqa: E402
 
 
-def test_waits_for_token_window_before_calling():
-    now = [0.0]
-    sleeps: list[float] = []
+class _Clock:
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps: list[float] = []
 
-    def sleep(s):
-        sleeps.append(s)
-        now[0] += s
+    def __call__(self):
+        return self.now
 
-    headers = {"x-ratelimit-remaining-tokens": "300", "x-ratelimit-reset-tokens": "6.5s",
-               "x-ratelimit-remaining-requests": "900"}
-    s = AllowlistedSession(GROQ_HOSTS)
-    t = mount(s, FakeTransport(lambda r: (200, _chat(json.dumps(GOOD)), headers)))
-    b = GroqBackend(s, "gsk_test_key_123456789", model="m", min_interval_seconds=0, clock=lambda: now[0], sleep=sleep)
-    b.classify("a")
-    b.classify("b")  # only 300 tokens left: must wait ~6.5s instead of eating a 429
-    assert sleeps and sleeps[-1] == pytest.approx(6.5)
-    assert len(t.requests) == 2
+    def sleep(self, s):
+        self.sleeps.append(s)
+        self.now += s
+
+
+def test_token_bucket_allows_burst_then_paces():
+    clock = _Clock()
+    bucket = TokenBucket(6, clock=clock, sleep=clock.sleep)
+    for _ in range(6):
+        bucket.take()
+    assert clock.sleeps == []
+    bucket.take()  # 7th call in the same instant waits one refill interval (10s)
+    assert clock.sleeps == [pytest.approx(10.0)]
+
+
+def test_rate_limited_backend_caps_calls_per_run():
+    clock = _Clock()
+    inner, _, _ = groq(lambda r: (200, _chat(json.dumps(GOOD)), {}))
+    limited = RateLimitedBackend(inner, per_minute=60, per_run=2, clock=clock, sleep=clock.sleep)
+    limited.classify("a")
+    limited.classify("b")
+    with pytest.raises(CallBudgetExhausted):
+        limited.classify("c")
+    assert isinstance(CallBudgetExhausted("x"), BackendUnavailable)  # rest stays pending
+
+
+def test_six_per_minute_over_twelve_calls_takes_about_a_minute():
+    clock = _Clock()
+    inner, _, _ = groq(lambda r: (200, _chat(json.dumps(GOOD)), {}))
+    limited = RateLimitedBackend(inner, per_minute=6, per_run=100, clock=clock, sleep=clock.sleep)
+    for i in range(12):
+        limited.classify(str(i))
+    assert clock.now == pytest.approx(60.0)
 
 
 def test_daily_limit_is_unavailable_not_retried():
@@ -230,11 +246,39 @@ def test_daily_limit_is_unavailable_not_retried():
     assert len(t.requests) == 1 and sleeps == []
 
 
-def test_zero_remaining_requests_stops_the_run():
-    backend, _, _ = groq(lambda r: (200, _chat(json.dumps(GOOD)), {"x-ratelimit-remaining-requests": "0"}))
+def test_zero_remaining_requests_stops_after_this_call():
+    backend, t, _ = groq(lambda r: (200, _chat(json.dumps(GOOD)), {"x-ratelimit-remaining-requests": "0"}))
+    assert backend.classify("t").company == "Acme"
     with pytest.raises(BackendUnavailable):
         backend.classify("t")
+    assert len(t.requests) == 1
 
 
-def test_estimate_grows_with_text():
-    assert estimate_tokens("x" * 3000) > estimate_tokens("x")
+# --- model text cleanup ------------------------------------------------------
+
+from mailwarden.core.classify.base import tidy_model_text  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("Apply via [LINK:linkedin.com] by [NUM]-10-12.", "Apply via a link by 12 Oct."),
+        ("Contact [EMAIL] or [PHONE].", "Contact an email address or a phone number."),
+        ("Your code [NUM] ([REDACTED]) expires.", "Your code expires."),
+        ("See https://x.example/y for more", "See a link for more"),
+    ],
+)
+def test_tidy_model_text(raw, expected):
+    assert tidy_model_text(raw) == expected
+
+
+def test_parse_output_never_stores_placeholders():
+    raw = json.dumps({**GOOD, "summary": "Book via [LINK:calendly.com] by [NUM]-10-05", "company": "Acme [TOKEN]"})
+    c = parse_output(raw)
+    assert "[" not in c.summary and "[" not in c.company
+    assert c.summary == "Book via a link by 5 Oct."
+
+
+def test_job_alert_is_a_schema_category():
+    assert "job_alert" in OUTPUT_SCHEMA["properties"]["category"]["enum"]
+    assert parse_output(json.dumps({**GOOD, "category": "job_alert", "stage": None})).category is Category.JOB_ALERT

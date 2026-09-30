@@ -133,3 +133,31 @@ def test_applications_and_history_and_forget(repo):
     assert len(apps) == 1 and apps[0].source_message_ids == ("m2",)
     repo.delete_account_data("local", "work")
     assert repo.list_applications("local") == []
+
+
+def test_v1_database_is_migrated(tmp_path, secret_store):
+    import sqlcipher3
+
+    from mailwarden.security.secrets import SecretKeys as SK
+
+    path = tmp_path / "d" / "mw.db"
+    path.parent.mkdir(mode=0o700)
+    key = "cd" * 32
+    secret_store.set(SK.db_key("local"), key)
+    db = sqlcipher3.connect(str(path))
+    db.execute(f"PRAGMA key = \"x'{key}'\"")
+    db.execute(
+        "CREATE TABLE messages (user_id TEXT NOT NULL, account TEXT NOT NULL, message_id TEXT NOT NULL, "
+        "status TEXT NOT NULL, sender_address TEXT, sender_name TEXT, received_at TEXT, tier TEXT, gate TEXT, "
+        "category TEXT, company TEXT, role TEXT, stage TEXT, action_required INTEGER, deadline TEXT, summary TEXT, "
+        "processed_at TEXT NOT NULL, PRIMARY KEY (user_id, account, message_id))"
+    )
+    db.execute("INSERT INTO messages (user_id, account, message_id, status, processed_at) VALUES ('local','p','x','pending','t')")
+    db.commit()
+    db.close()
+    os.chmod(path, 0o600)
+    r = SQLCipherRepository.open(path, secret_store, "local")
+    cols = {row[1] for row in r._db.execute("PRAGMA table_info(messages)")}
+    assert {"classified_by", "held_reason", "held_job", "held_company", "held_stage"} <= cols
+    assert r.list_pending("local", "p", 10) == ["x"]
+    r.close()

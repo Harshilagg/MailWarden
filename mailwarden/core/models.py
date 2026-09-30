@@ -33,6 +33,7 @@ class Tier(StrEnum):
     PRIORITY = "priority"
     SENSITIVE = "sensitive"
     IGNORE = "ignore"
+    JOB_ALERT = "job_alert"
     DEFAULT = "default"
 
 
@@ -49,6 +50,7 @@ class MessageStatus(StrEnum):
 
 class Category(StrEnum):
     JOB = "job"
+    JOB_ALERT = "job_alert"
     PERSONAL = "personal"
     NEWSLETTER = "newsletter"
     NOTIFICATION = "notification"
@@ -88,6 +90,8 @@ class FetchedMessage(BaseModel):
     label_ids: tuple[str, ...] = ()
     #: False if any part of the content could not be parsed (gate fails closed).
     content_complete: bool = True
+    #: True if the message carries List-Unsubscribe or Precedence: bulk/list/junk.
+    is_bulk: bool = False
 
     @field_validator("received_at")
     @classmethod
@@ -145,11 +149,21 @@ class EmailMeta(_Frozen):
     gate: GateDecision
     status: MessageStatus = MessageStatus.DONE
     classification: Classification | None = None
+    #: How it was classified: "llm", "rule:<name>", or None.
+    classified_by: str | None = None
+    #: Friendly, content-free reason a SENSITIVE message was held back.
+    held_reason: str | None = None
+    #: Held-back job mail surfaced to the user (company/stage from local rules only).
+    held_job: bool = False
+    held_company: str | None = Field(default=None, max_length=200)
+    held_stage: Stage | None = None
 
     @model_validator(mode="after")
     def _sensitive_is_minimal(self) -> EmailMeta:
         if self.gate is GateDecision.SENSITIVE and (self.sender_address or self.classification):
-            raise ValueError("SENSITIVE mail may only store sender name, time and account")
+            raise ValueError("SENSITIVE mail may only store sender name, time, account and local job metadata")
+        if self.held_job and self.gate is not GateDecision.SENSITIVE:
+            raise ValueError("held_job is only for SENSITIVE mail")
         return self
 
 

@@ -12,15 +12,20 @@ user_id = "local"
 backend = "groq"
 # Subject + first N characters of the body are sent for classification.
 max_body_chars = 1500
+# Local rate limit (token bucket). Groq's free tier allows 8K tokens/min,
+# about 6 emails/min. Mail beyond max_llm_calls_per_run waits for the next run.
+max_llm_calls_per_minute = 6
+max_llm_calls_per_run = 150
 
 [groq]
 # Explicit opt-in to sending redacted SAFE text to api.groq.com.
 # Keep your Groq org on the free tier (no billing method): it cannot incur charges,
 # it is rate-limited instead. Enable Zero Data Retention in Groq's Data Controls.
 enabled = true
+# Any Groq model that supports strict structured outputs, e.g.
+# "openai/gpt-oss-20b" (fast), "openai/gpt-oss-120b", "qwen/qwen3.8-27b".
 model = "openai/gpt-oss-20b"
 reasoning_effort = "low"
-min_interval_seconds = 2.5
 timeout_seconds = 60
 
 [ollama]
@@ -30,7 +35,7 @@ model = "qwen2.5:3b"
 timeout_seconds = 180
 
 [gmail]
-# Days fetched on first sync, or when Gmail's history cursor has expired.
+# First run backfills only this many days (also used if Gmail's history cursor expires).
 full_sync_days = 7
 max_messages_per_run = 200
 

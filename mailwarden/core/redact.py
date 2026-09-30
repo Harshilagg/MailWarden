@@ -39,10 +39,15 @@ _FOOTER = re.compile(
     r"|if\s+you\s+(?:no\s+longer|don'?t)\s+want|view\s+(?:this\s+)?(?:e-?mail\s+)?in\s+(?:your\s+)?browser)"
 )
 _MIN_KEEP = 200
+# Lines dropped wherever they appear (they identify the recipient, add nothing).
+_DROP_LINES = re.compile(
+    r"(?im)^.*\bthis\s+(?:e-?mail|message)\s+was\s+intended\s+for\b.*$\n?"
+)
 
 
 def strip_footer(text: str) -> str:
     """Drop newsletter/legal footers: fewer tokens and less data leaving the machine."""
+    text = _DROP_LINES.sub("", text)
     for m in _FOOTER.finditer(text):
         if m.start() >= _MIN_KEEP:
             return text[: m.start()].rstrip()

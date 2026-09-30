@@ -199,9 +199,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     finally:
         repo.close()
     print(
-        f"processed {stats.new} new: {stats.classified} classified, {stats.unclassified} unclassified, "
-        f"{stats.sensitive} sensitive (not processed), {stats.ignored} ignored; "
-        f"{stats.job} job emails; {len(stats.alerts)} would notify; {stats.pending} pending for next run"
+        f"processed {stats.new} new: {stats.classified} classified by LLM, {stats.rule_classified} by rule, "
+        f"{stats.unclassified} unclassified, {stats.sensitive} sensitive (not processed; {stats.held_jobs} of "
+        f"them job mail surfaced), {stats.ignored} ignored; {stats.job} job emails; "
+        f"{len(stats.alerts)} would notify; {stats.pending} pending for next run"
     )
     if stats.accounts_failed:
         print(f"accounts failed: {', '.join(stats.accounts_failed)}", file=sys.stderr)
@@ -292,7 +293,7 @@ def build_parser() -> argparse.ArgumentParser:
     dr.set_defaults(func=cmd_dry_run)
     pr = sub.add_parser("promote", help="move a sender address or domain to a tier")
     pr.add_argument("sender", help="address (a@b.com) or domain (b.com)")
-    pr.add_argument("tier", choices=["priority", "sensitive", "ignore", "default"])
+    pr.add_argument("tier", choices=["priority", "sensitive", "ignore", "job_alert", "default"])
     pr.add_argument("--yes", action="store_true", help="skip confirmation when demoting a SENSITIVE sender")
     pr.set_defaults(func=cmd_promote)
     return p

@@ -34,17 +34,21 @@ def _c(**kw):
 
 
 @pytest.mark.parametrize(
-    "c, expected",
+    "c, known, priority, expected",
     [
-        (_c(), False),
-        (_c(action_required=True), True),
-        (_c(stage=Stage.ASSESSMENT), True),
-        (_c(stage=Stage.INTERVIEW), True),
-        (_c(stage=Stage.OFFER), True),
-        (_c(stage=Stage.REJECTION), False),
-        (_c(category=Category.NEWSLETTER, stage=None, action_required=True), False),
-        (None, False),
+        (_c(), False, False, False),
+        (_c(stage=Stage.ASSESSMENT), False, False, True),
+        (_c(stage=Stage.INTERVIEW), False, False, True),
+        (_c(stage=Stage.OFFER), False, False, True),
+        (_c(stage=Stage.REJECTION), True, True, False),
+        # action_required only counts for tracked companies or PRIORITY senders
+        (_c(action_required=True), False, False, False),
+        (_c(action_required=True), True, False, True),
+        (_c(action_required=True), False, True, True),
+        (_c(category=Category.JOB_ALERT, stage=None, action_required=True), True, True, False),
+        (_c(category=Category.NEWSLETTER, stage=None, action_required=True), True, True, False),
+        (None, True, True, False),
     ],
 )
-def test_should_alert(c, expected):
-    assert should_alert(c) is expected
+def test_should_alert(c, known, priority, expected):
+    assert should_alert(c, known_company=known, priority_sender=priority) is expected

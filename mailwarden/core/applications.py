@@ -36,6 +36,64 @@ def next_stage(current: Stage, new: Stage | None) -> Stage:
     return new if _RANK.get(new, 0) >= _RANK.get(current, 0) else current
 
 
+def is_known_company(repo: Repository, user_id: str, company: str | None) -> bool:
+    key = company_key(company or "")
+    return bool(key) and repo.find_application(user_id, key, "") is not None
+
+
+def record_job_event(
+    repo: Repository,
+    user_id: str,
+    *,
+    company: str | None,
+    role: str | None,
+    stage: Stage | None,
+    account: str,
+    message_id: str,
+    received_at: dt.datetime,
+    domain: str | None,
+) -> Application | None:
+    """Create or advance an application from one job email's metadata."""
+    if not company or stage is None:
+        return None
+    ckey = company_key(company)
+    if not ckey:
+        return None
+    existing = repo.find_application(user_id, ckey, role_key(role))
+    if existing is None and stage is Stage.OTHER:
+        return None
+    if existing is None:
+        app = Application(
+            user_id=user_id,
+            company=company.strip()[:200],
+            role=role or None,
+            current_stage=stage,
+            last_update=received_at,
+            source_message_ids=(message_id,),
+        )
+    else:
+        if message_id in existing.source_message_ids:
+            return existing
+        app = existing.model_copy(
+            update={
+                "role": existing.role or role,
+                "current_stage": next_stage(existing.current_stage, stage),
+                "last_update": max(existing.last_update, received_at),
+                "source_message_ids": (*existing.source_message_ids, message_id),
+            }
+        )
+    repo.upsert_application(app, event_stage=stage, account=account, message_id=message_id,
+                            occurred_at=received_at, domain=domain)
+    return app
+
+
+def company_domain(sender_domain: str, *, via_ats: bool) -> str | None:
+    """A company's own domain (not an ATS, job board or freemail) becomes a PRIORITY domain."""
+    if via_ats or not sender_domain or sender_domain in FREEMAIL:
+        return None
+    return sender_domain
+
+
 def update_applications(
     repo: Repository,
     user_id: str,
@@ -47,35 +105,9 @@ def update_applications(
     sender_domain: str,
     via_ats: bool,
 ) -> Application | None:
-    if c is None or c.category is not Category.JOB or not c.company or c.stage is None:
+    if c is None or c.category is not Category.JOB:
         return None
-    ckey = company_key(c.company)
-    if not ckey:
-        return None
-    existing = repo.find_application(user_id, ckey, role_key(c.role))
-    if existing is None and c.stage is Stage.OTHER:
-        return None
-    # A company's own domain (not an ATS or freemail) becomes a PRIORITY domain.
-    domain = None if via_ats or sender_domain in FREEMAIL else sender_domain or None
-    if existing is None:
-        app = Application(
-            user_id=user_id,
-            company=c.company.strip()[:200],
-            role=(c.role or None),
-            current_stage=c.stage,
-            last_update=received_at,
-            source_message_ids=(message_id,),
-        )
-    else:
-        if message_id in existing.source_message_ids:
-            return existing
-        app = existing.model_copy(
-            update={
-                "role": existing.role or c.role,
-                "current_stage": next_stage(existing.current_stage, c.stage),
-                "last_update": max(existing.last_update, received_at),
-                "source_message_ids": (*existing.source_message_ids, message_id),
-            }
-        )
-    repo.upsert_application(app, event_stage=c.stage, account=account, message_id=message_id, occurred_at=received_at, domain=domain)
-    return app
+    return record_job_event(
+        repo, user_id, company=c.company, role=c.role, stage=c.stage, account=account,
+        message_id=message_id, received_at=received_at, domain=company_domain(sender_domain, via_ats=via_ats),
+    )

@@ -36,7 +36,10 @@ does not retain inference data by default, but may log inputs and outputs for
 up to 30 days for reliability or abuse investigation. **Turn on Zero Data
 Retention** (Groq console → Settings → Data Controls) to disable that logging.
 Keep the Groq organisation on the free tier with no billing method, so usage
-cannot incur charges. The API key is stored only in the OS keyring
+cannot incur charges. Calls are paced locally by a token bucket
+(`llm.max_llm_calls_per_minute`, default 6) and capped per run
+(`llm.max_llm_calls_per_run`, default 150). The rest stays pending for the next
+run. The API key is stored only in the OS keyring
 (`mailwarden set-groq-key`, hidden input).
 
 `mailwarden doctor --llm` sends one hard-coded synthetic email (no real mail) to
@@ -49,7 +52,9 @@ data and any instructions in it must be ignored. The email is wrapped in
 delimiters carrying a random per-request nonce, so it cannot forge the closing
 tag. Output is pinned with strict structured outputs (JSON schema), then
 re-validated locally by a strict pydantic model that rejects extra keys. Invalid
-output is retried once, then the message is stored as "unclassified". The code
+output is retried once, then the message is stored as "unclassified".
+Redaction placeholders the model echoes back ([LINK:...], [NUM], ...) are
+removed from stored text. The code
 never acts on model output beyond storing these fields: there are no tools,
 link fetches or follow-up requests.
 
@@ -64,6 +69,30 @@ account and card numbers, KYC, PAN, Aadhaar, tax and government IDs. Text is
 normalised first (NFKC, zero-width and bidi characters removed, Cyrillic and
 Greek look-alikes folded) to defeat obfuscation.
 
+Tuned rules (so generic job-portal footers don't hold job mail):
+`do_not_share` fires only when share, forward or disclose is within about
+6 words of OTP, code, password, PIN or CVV. An Aadhaar number must pass the
+Verhoeff checksum and have "Aadhaar" within about 50 characters. A PAN
+(`[A-Z]{5}[0-9]{4}[A-Z]`) must have the word PAN nearby. The keyword rules
+(Aadhaar, KYC, OTP, ...) are unchanged.
+
+**Recruiting overrides (sender rules only).** A recruiting subdomain
+(`careers.`, `recruitment.`, `talent.`, `jobs.` ...) of a SENSITIVE company
+domain is treated as PRIORITY. A recruiting display name on such a domain only
+removes the sender-based hold. Account-security senders and exact-address
+rules are never overridden, and content rules always apply. Display names are
+easy to forge, so a forged "Careers" name can get past the sender tier but not
+the content rules.
+
+**Held-back job mail.** When mail from a PRIORITY or recruiting sender is held
+as SENSITIVE, it still never reaches an LLM. Locally, deterministic rules
+extract a company (from the sender name or domain) and a stage (from subject
+keywords). Only those two values, a friendly reason (e.g. "Contains a
+verification code"), the sender display name, the time and the account are
+stored. The subject itself is never stored or shown. This metadata can update
+the applications table and trigger a notification such as
+"Amex · assessment · needs your attention".
+
 It fails closed. A gate error, a sender-rules error, a redaction error, an
 unparseable body or an unparseable sender all count as SENSITIVE.
 
@@ -76,11 +105,18 @@ emails. It runs on every test run, and a skip is reported as a failure.
 
 ## Redaction
 
+Some SAFE mail is classified by local rules with no LLM call: social
+notifications (Instagram, Facebook, WhatsApp, X), job-board alert senders
+(the `job_alert` tier) and non-PRIORITY mail carrying `List-Unsubscribe` or
+`Precedence: bulk`.
+
 SAFE mail is redacted before classification. Newsletter and legal footers
-(unsubscribe, privacy policy, "you are receiving this" and similar) are dropped first. Then email addresses, phone numbers,
+(unsubscribe, privacy policy, "you are receiving this" and similar), and
+LinkedIn's "This email was intended for ..." line, are dropped first. Then email addresses, phone numbers,
 every run of 4 or more digits, URLs (reduced to `[LINK:domain]`), and anything
 resembling a token, key, password or ID number are removed. The text is then
-cut to the subject plus the first `llm.max_body_chars` (default 1500)
+Names, employers and colleges are deliberately not redacted, because they're
+needed for classification. The text is then cut to the subject plus the first `llm.max_body_chars` (default 1500)
 characters of the body. The sender's domain is kept; the sender's address
 and name are not. `mailwarden dry-run` prints this exact text.
 

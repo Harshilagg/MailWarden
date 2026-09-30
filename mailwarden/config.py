@@ -36,6 +36,10 @@ class _Section(BaseModel):
 class LLMSettings(_Section):
     backend: Literal["ollama", "groq"] = "ollama"
     max_body_chars: int = Field(default=1500, ge=200, le=8000)
+    # Local token bucket. Groq free tier: 8K tokens/min at ~1.1K tokens per email -> ~6/min.
+    max_llm_calls_per_minute: int = Field(default=6, ge=1, le=600)
+    # Anything beyond this stays pending for the next run.
+    max_llm_calls_per_run: int = Field(default=150, ge=1, le=5000)
 
 
 class OllamaSettings(_Section):
@@ -57,8 +61,8 @@ class GroqSettings(_Section):
     enabled: bool = False
     model: str = "openai/gpt-oss-20b"
     reasoning_effort: Literal["low", "medium", "high"] = "low"
-    # Free tier for gpt-oss-20b: 30 req/min, 8K tokens/min. ~2.5s spacing stays inside it.
-    min_interval_seconds: float = Field(default=2.5, ge=0, le=60)
+    # Optional extra spacing between calls; pacing is done by [llm] max_llm_calls_per_minute.
+    min_interval_seconds: float = Field(default=0, ge=0, le=60)
     timeout_seconds: float = Field(default=60, gt=0, le=300)
 
 

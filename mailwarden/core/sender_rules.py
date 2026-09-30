@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from mailwarden.core.models import Tier
 
-RULE_TIERS = (Tier.PRIORITY, Tier.SENSITIVE, Tier.IGNORE)
+RULE_TIERS = (Tier.PRIORITY, Tier.SENSITIVE, Tier.IGNORE, Tier.JOB_ALERT)
 DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$")
 ADDRESS_RE = re.compile(r"^[a-z0-9._%+'-]{1,64}@(?:[a-z0-9-]+\.)+[a-z0-9-]{2,63}$")
 
@@ -51,6 +51,15 @@ class _RulesFile(BaseModel):
     priority: _TierLists = _TierLists()
     sensitive: _TierLists = _TierLists()
     ignore: _TierLists = _TierLists()
+    job_alert: _TierLists = _TierLists()
+
+
+@dataclass(frozen=True)
+class RuleMatch:
+    tier: Tier
+    #: The entry that matched (address or domain), None for DEFAULT.
+    entry: str | None = None
+    by_address: bool = False
 
 
 @dataclass(frozen=True)
@@ -76,19 +85,23 @@ class SenderRules:
                 target[entry] = tier
         return cls(addresses, domains)
 
-    def tier_for(self, sender_address: str) -> Tier:
+    def match(self, sender_address: str) -> RuleMatch:
         address = sender_address.strip().lower()
         if address in self.addresses:
-            return self.addresses[address]
+            return RuleMatch(self.addresses[address], address, by_address=True)
         _, at, domain = address.rpartition("@")
         if not at or not domain:
-            return Tier.DEFAULT
+            return RuleMatch(Tier.DEFAULT)
         labels = domain.split(".")
         for i in range(len(labels) - 1):  # most specific first; never a bare TLD
-            tier = self.domains.get(".".join(labels[i:]))
+            candidate = ".".join(labels[i:])
+            tier = self.domains.get(candidate)
             if tier is not None:
-                return tier
-        return Tier.DEFAULT
+                return RuleMatch(tier, candidate)
+        return RuleMatch(Tier.DEFAULT)
+
+    def tier_for(self, sender_address: str) -> Tier:
+        return self.match(sender_address).tier
 
     def tier_of_entry(self, entry: str) -> Tier:
         entry = normalise_entry(entry)
@@ -110,7 +123,7 @@ class SenderRules:
 # In-place editing for `mailwarden promote` (keeps the user's comments).
 # ---------------------------------------------------------------------------
 
-_TOP = re.compile(r"^(priority|sensitive|ignore):\s*(#.*)?$")
+_TOP = re.compile(r"^(priority|sensitive|ignore|job_alert):\s*(#.*)?$")
 _SUB = re.compile(r"^(\s+)(domains|senders):\s*(\[\s*\])?\s*(#.*)?$")
 
 

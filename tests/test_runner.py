@@ -143,3 +143,60 @@ def test_company_domain_becomes_priority_next_run(repo):
     runner(repo, Provider({"a1": msg}), FakeLLM(applied)).run([ACCOUNT])
     assert repo.application_domains("local") == {"acme.com"}
     assert RULES.with_priority_domains(repo.application_domains("local")).tier_for("hr@acme.com").value == "priority"
+
+
+def test_held_job_mail_is_stored_minimally_and_alerts(repo):
+    msg = make("support@hackerearth.com", "HackerEarth", "Coding challenge invite", "Your verification code is 771203.",
+               message_id="h1")
+    llm = FakeLLM(INTERVIEW)
+    stats = runner(repo, Provider({"h1": msg}), llm).run([ACCOUNT])
+    assert stats.sensitive == 1 and stats.held_jobs == 1 and llm.calls == []
+    meta = repo.list_email_meta("local")[0]
+    assert meta.gate is GateDecision.SENSITIVE and meta.sender_address is None and meta.classification is None
+    assert meta.held_job and meta.held_company == "HackerEarth" and meta.held_stage is Stage.ASSESSMENT
+    assert meta.held_reason == "Contains a verification code"
+    alert = stats.alerts[0]
+    assert alert.held and alert.title() == "HackerEarth · assessment · needs your attention"
+    apps = repo.list_applications("local")
+    assert len(apps) == 1 and apps[0].company == "HackerEarth" and apps[0].current_stage is Stage.ASSESSMENT
+    raw = repo._db.execute("SELECT * FROM messages").fetchone()
+    assert "Coding challenge invite" not in str(raw) and "771203" not in str(raw)
+
+
+def test_rule_classified_mail_is_stored_without_llm(repo):
+    msgs = {
+        "n1": make("news@substack.com", "Substack", "Weekly", "Hello readers", message_id="n1", is_bulk=True),
+        "j1": make("jobalerts-noreply@linkedin.com", "LinkedIn Job Alerts", "Jobs", "New jobs", message_id="j1"),
+        "i1": make("no-reply@mail.instagram.com", "Instagram", "DMs", "2 unread", message_id="i1"),
+    }
+    llm = FakeLLM(INTERVIEW)
+    stats = runner(repo, Provider(msgs), llm).run([ACCOUNT])
+    assert llm.calls == [] and stats.rule_classified == 3 and stats.alerts == []
+    by_id = {m.message_id: m for m in repo.list_email_meta("local")}
+    assert by_id["n1"].classification.category is Category.NEWSLETTER and by_id["n1"].classified_by == "rule:bulk_header"
+    assert by_id["j1"].classification.category is Category.JOB_ALERT
+    assert by_id["i1"].classification.category is Category.NOTIFICATION
+
+
+def test_action_required_alerts_only_for_known_company_or_priority(repo):
+    act = Classification(category=Category.JOB, company="Initech", role=None, stage=Stage.OTHER,
+                         action_required=True, deadline=None, summary="Please reply to Initech.")
+    msg = make("hr@initech.com", "Initech HR", "Quick question", "Please reply", message_id="a1")
+    stats = runner(repo, Provider({"a1": msg}), FakeLLM(act)).run([ACCOUNT])
+    assert stats.alerts == []  # unknown company, non-priority sender
+
+    applied = act.model_copy(update={"stage": Stage.APPLIED, "action_required": False})
+    runner(repo, Provider({"a2": make("hr@initech.com", "Initech HR", "Applied", "Thanks", message_id="a2")}),
+           FakeLLM(applied)).run([ACCOUNT])
+    stats = runner(repo, Provider({"a3": make("hr@initech.com", "Initech HR", "Docs", "Send docs", message_id="a3")}),
+                   FakeLLM(act)).run([ACCOUNT])
+    assert len(stats.alerts) == 1  # company is tracked now
+
+
+def test_llm_budget_exhausted_leaves_rest_pending(repo):
+    from mailwarden.core.classify.ratelimit import RateLimitedBackend
+
+    msgs = {f"f{i}": make(f"p{i}@gmail.com", "Friend", "Hi", "Dinner?", message_id=f"f{i}") for i in range(4)}
+    llm = RateLimitedBackend(FakeLLM(INTERVIEW), per_minute=600, per_run=2, sleep=lambda s: None)
+    stats = runner(repo, Provider(msgs), llm).run([ACCOUNT])
+    assert stats.classified == 2 and stats.pending == 2

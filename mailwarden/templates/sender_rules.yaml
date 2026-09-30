@@ -7,9 +7,16 @@
 # PRIORITY  job mail; still passes the sensitivity gate and redaction.
 # SENSITIVE never sent to any LLM; only sender name/time/account stored.
 # IGNORE    counted in the digest; never classified.
+# JOB_ALERT job-board alerts and matches: labelled "job_alert" by rule, no LLM
+#           call, never notify, digest only.
+#
+# A recruiting subdomain (careers., recruitment., talent., jobs. ...) of a
+# SENSITIVE company domain is treated as PRIORITY for sender rules; content
+# rules (OTP, codes, passwords, ...) still apply. Account-security senders are
+# never overridden.
 #
 # An entry may appear in only one tier. Move entries with:
-#   mailwarden promote <address-or-domain> <priority|sensitive|ignore|default>
+#   mailwarden promote <address-or-domain> <priority|sensitive|ignore|job_alert|default>
 
 priority:
   domains:
@@ -20,6 +27,7 @@ priority:
     - ashbyhq.com
     - myworkdayjobs.com
     - myworkday.com
+    - jobs2web.com
     - smartrecruiters.com
     - workable.com
     - workablemail.com
@@ -35,6 +43,8 @@ priority:
     - applytojob.com
     - breezy.hr
     - avature.net
+    # Recruiting subdomains of companies whose main domain is SENSITIVE
+    - recruitment.americanexpress.com
     - eightfold.ai
     - zohorecruit.com
     - zohorecruit.in
@@ -193,3 +203,17 @@ ignore:
   # Senders you never want processed, e.g. - offers.example.com
   domains: []
   senders: []
+
+job_alert:
+  # Job-board alerts and recommendations (not your own applications)
+  domains:
+    - match.indeed.com
+    - jobalert.indeed.com
+    - alert.indeed.com
+    - naukri.com
+    - foundit.in
+    - internshala.com
+  senders:
+    - jobalerts-noreply@linkedin.com
+    - jobs-noreply@linkedin.com
+    - jobs-listings@linkedin.com

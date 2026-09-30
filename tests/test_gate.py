@@ -44,7 +44,8 @@ def test_job_phrasing_does_not_trip(text):
         ("one-time passcode inside", "otp"),
         ("Enter the security code", "verification_code"),
         ("2-step verification is on", "two_factor"),
-        ("Please DO NOT SHARE this", "do_not_share"),
+        ("Please DO NOT SHARE this OTP", "do_not_share"),
+        ("Your PIN: never forward it", "do_not_share"),
         ("Reset your password", "password"),
         ("New sign-in from Chrome", "login_alert"),
         ("Unrecognised device", "new_device"),
@@ -55,8 +56,9 @@ def test_job_phrasing_does_not_trip(text):
         ("Card ending 1234", "card_ending"),
         ("Re-KYC due", "kyc"),
         ("PAN ABCDE1234F", "pan"),
+        ("Your PAN is ABCDE1234F", "pan"),
         ("Aadhar linked", "aadhaar"),
-        ("2345 6789 0123", "aadhaar_number"),
+        ("Aadhaar no. 2341 2341 2346", "aadhaar_number"),
         ("Form 16 for FY", "tax"),
         ("Your seed phrase", "crypto_secret"),
         ("verify with 5521", "code_near_number"),
@@ -84,3 +86,26 @@ def test_reasons_never_contain_message_text():
     msg = make("a@x.com", "A", "Your OTP 918273", "code 918273")
     r = evaluate(msg, Tier.DEFAULT)
     assert all("918273" not in reason for reason in r.reasons)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Do not forward this email",
+        "This message is intended only for you. Do not forward this email.",
+        "Please don't share this post with your network",
+        "Tracking ID 2341 2341 2346",           # valid Verhoeff, but no Aadhaar word
+        "Order 234123412346 shipped",
+        "Aadhaar camp on 12 Oct; hall 2345 6789 0123",  # word present, checksum invalid
+        "Reference ABCDE1234F",                 # PAN-shaped, but no PAN word nearby
+    ],
+)
+def test_tightened_rules_do_not_fire(text):
+    hits = scan_text(text)
+    assert "do_not_share" not in hits and "aadhaar_number" not in hits and "pan" not in hits, hits
+
+
+def test_verhoeff():
+    from mailwarden.core.sensitivity_gate import verhoeff_valid
+
+    assert verhoeff_valid("234123412346") and not verhoeff_valid("234123412345")

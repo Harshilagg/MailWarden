@@ -51,21 +51,30 @@ Redaction: placeholders like [EMAIL], [PHONE], [NUM], [TOKEN], [LINK:domain],
 future date relative to today.
 
 Fields:
-- category: "job" ONLY for the user's own applications and hiring processes:
-  application confirmations, assessments, interviews, offers, rejections, and
-  recruiters writing to the user personally about a specific role.
-  Job-board alerts, "jobs you may like", job matches/recommendations (LinkedIn,
-  Indeed, Naukri, foundit, Internshala, company talent-network alerts), and
-  career newsletters are "newsletter", even if they name a role or say "apply".
-  Otherwise "personal", "notification" or "other".
+- category:
+  "job": ONLY the user's own applications and hiring processes: application
+    confirmations, assessments, interviews, offers, rejections, and recruiters
+    writing to the user personally about a specific role.
+  "job_alert": job recommendations, job matches, "jobs you may like", job-board
+    and talent-network alerts (LinkedIn, Indeed, Naukri, foundit, company career
+    sites), even if they name a role or say "apply".
+  "newsletter": newsletters, articles, marketing and promotions.
+  "notification": automated account/app/social notifications.
+  "personal": written by a person to the user, not about a job.
+  "other": anything else.
 - company, role: the hiring company and job title if stated, else null.
-- stage (job mail only, else null): "applied" (application received), "assessment"
-  (test/assignment), "interview", "offer", "rejection", or "other".
+- stage (category "job" only, else null): "applied" (application received),
+  "assessment" (test/assignment), "interview", "offer", "rejection", or "other".
 - action_required: true only if the user must do something in an ongoing process
   (book a slot, take a test, reply, sign, submit documents). Always false for
-  newsletters, promotions, offers/discounts and job alerts.
+  job_alert, newsletters, promotions, discounts, offers to buy something, and
+  event or webinar registrations.
 - deadline: YYYY-MM-DD if a deadline or scheduled date is stated, else null.
-- summary: neutral, at most {SUMMARY_MAX_WORDS} words, no placeholders, no links."""
+- summary: ONE plain, natural sentence addressed to the user as "you", at most
+  {SUMMARY_MAX_WORDS} words. Write dates like "Tue, 5 Oct". Never include placeholders
+  such as [LINK:...], [NUM], [EMAIL], [TOKEN], no URLs, no jargon.
+  Example: "You're invited to an interview with Amex on Tue, 5 Oct."
+"""
 
 
 def build_messages(redacted_text: str, today: dt.date | None = None) -> list[dict[str, str]]:

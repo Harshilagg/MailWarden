@@ -81,9 +81,12 @@ warning at sign-in, and tokens no longer expire weekly.
 .venv/bin/mailwarden doctor --llm      # checks the key with a synthetic email
 ```
 
-Free-tier limits for `openai/gpt-oss-20b` are 30 requests/min and 1,000/day.
-mailwarden spaces requests about 2.5 s apart and waits on rate limits.
-Anything it can't finish is kept as *pending* and retried on the next run.
+Free-tier limits are 8,000 tokens/min and 1,000 requests/day, about 6 emails per
+minute. mailwarden paces itself with a local token bucket
+(`[llm] max_llm_calls_per_minute = 6`) and caps each run
+(`max_llm_calls_per_run = 150`). Anything it can't finish is kept as *pending*
+and retried on the next run. The model is set by `[groq] model`. The first
+run only backfills `[gmail] full_sync_days` (7) days.
 
 To stay fully local instead, install Ollama, `ollama pull qwen2.5:3b`, and set
 `[llm] backend = "ollama"`.
@@ -99,7 +102,7 @@ To stay fully local instead, install Ollama, `ollama pull qwen2.5:3b`, and set
 | `mailwarden set-groq-key` | Store the Groq API key in the keyring (hidden input) |
 | `mailwarden run` | One sync + classify pass; stores metadata and classifications in the encrypted DB |
 | `mailwarden dry-run [--last N] [--account n] [--summary] [--with-llm]` | Show, per message, the tier, gate decision and the exact redacted text that *would* go to the LLM. Stores and notifies nothing; sends nothing unless `--with-llm` is given, in which case it also prints each classification and whether a notification would fire |
-| `mailwarden promote <address-or-domain> <tier>` | Move a sender to `priority`, `sensitive`, `ignore` or `default` |
+| `mailwarden promote <address-or-domain> <tier>` | Move a sender to `priority`, `sensitive`, `ignore`, `job_alert` or `default` |
 | `mailwarden forget-account <n>` | Revoke token at Google, delete it from the keyring, delete the account's stored data |
 
 `digest`, `dashboard` and notifications arrive in phase 4.
@@ -112,6 +115,13 @@ To stay fully local instead, install Ollama, `ollama pull qwen2.5:3b`, and set
 - **sensitive**: banks, UPI/payment apps, cards, brokers, tax/government,
   account-security senders. Never sent to any LLM.
 - **ignore**: senders you never want processed; only counted.
+- **job_alert**: job-board alerts and matches (LinkedIn job alerts, Indeed,
+  Naukri, foundit, Internshala). Labelled by rule, never notify, digest only.
+
+A recruiting subdomain of a sensitive company (e.g. `recruitment.americanexpress.com`)
+counts as priority. Job mail that the gate holds back is still surfaced, but only
+as "Company · stage · needs your attention", with no subject or content, and it
+never goes to the LLM.
 
 Domains match their subdomains too; an exact address beats a domain rule.
 Workflow:

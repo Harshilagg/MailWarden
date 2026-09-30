@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
 from collections.abc import Callable
 
@@ -23,23 +22,6 @@ CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 MODELS_URL = "https://api.groq.com/openai/v1/models"
 _MAX_RATE_LIMIT_WAITS = 3
 _MAX_WAIT_SECONDS = 60.0
-_DURATION = re.compile(r"^(?:(\d+)h)?(?:(\d+)m(?!s))?(?:([\d.]+)s)?(?:([\d.]+)ms)?$")
-
-
-def parse_duration(value: str | None) -> float | None:
-    """Groq reset headers look like '4.702s', '1m26.4s', '1h13m26.4s' or '250ms'."""
-    if not value:
-        return None
-    m = _DURATION.match(value.strip())
-    if not m or not any(m.groups()):
-        return None
-    h, mins, secs, ms = m.groups()
-    return int(h or 0) * 3600 + int(mins or 0) * 60 + float(secs or 0) + float(ms or 0) / 1000
-
-
-def estimate_tokens(text: str) -> int:
-    """Rough upper estimate for one call: system prompt + email + reasoning + JSON output."""
-    return 900 + len(text) // 3
 
 
 class GroqBackend(LLMBackend):
@@ -53,7 +35,7 @@ class GroqBackend(LLMBackend):
         *,
         model: str,
         reasoning_effort: str = "low",
-        min_interval_seconds: float = 2.5,
+        min_interval_seconds: float = 0,
         timeout_seconds: float = 60,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
@@ -69,8 +51,6 @@ class GroqBackend(LLMBackend):
         self._clock = clock
         self._sleep = sleep
         self._last_call = -float("inf")
-        self._tokens_remaining: int | None = None
-        self._tokens_reset_at = 0.0
 
     def __repr__(self) -> str:
         return f"GroqBackend(model={self.model!r}, api_key=***)"
@@ -91,27 +71,17 @@ class GroqBackend(LLMBackend):
         if self.model not in ids:
             raise BackendError(f"model {self.model!r} is not available to this Groq key")
 
-    def _pace(self, needed_tokens: int) -> None:
+    def _pace(self) -> None:
+        # Primary pacing is the local token bucket (RateLimitedBackend); this is
+        # only an optional minimum spacing between calls.
         wait = self._last_call + self._min_interval - self._clock()
-        if self._tokens_remaining is not None and self._tokens_remaining < needed_tokens:
-            wait = max(wait, self._tokens_reset_at - self._clock())
         if wait > 0:
-            log.debug("pacing Groq requests: waiting %.1fs", wait)
             self._sleep(wait)
         self._last_call = self._clock()
 
-    def _record_limits(self, headers) -> None:
-        try:
-            remaining = headers.get("x-ratelimit-remaining-tokens")
-            self._tokens_remaining = int(remaining) if remaining is not None else None
-        except ValueError:
-            self._tokens_remaining = None
-        reset = parse_duration(headers.get("x-ratelimit-reset-tokens"))
-        self._tokens_reset_at = self._clock() + min(reset or 0.0, _MAX_WAIT_SECONDS)
-        if headers.get("x-ratelimit-remaining-requests") == "0":
-            raise BackendUnavailable("Groq daily request limit reached; remaining mail stays pending")
-
     def classify(self, redacted_text: str) -> Classification:
+        if getattr(self, "_exhausted", False):
+            raise BackendUnavailable("Groq daily request limit reached; remaining mail stays pending")
         payload = {
             "model": self.model,
             "messages": build_messages(redacted_text),
@@ -124,9 +94,8 @@ class GroqBackend(LLMBackend):
                 "json_schema": {"name": SCHEMA_NAME, "strict": True, "schema": OUTPUT_SCHEMA},
             },
         }
-        needed = estimate_tokens(redacted_text)
         for _ in range(_MAX_RATE_LIMIT_WAITS + 1):
-            self._pace(needed)
+            self._pace()
             try:
                 resp = self._session.post(CHAT_URL, headers=self._headers(), json=payload, timeout=self._timeout)
             except RequestException as e:
@@ -141,7 +110,9 @@ class GroqBackend(LLMBackend):
                 log.debug("Groq rate limit reached; waiting %.0fs", wait)
                 self._sleep(wait)
                 continue
-            self._record_limits(resp.headers)
+            if resp.headers.get("x-ratelimit-remaining-requests") == "0":
+                log.info("Groq daily request limit reached after this call")
+                self._exhausted = True
             break
         else:
             raise BackendUnavailable("Groq rate limit persisted; remaining mail left pending")

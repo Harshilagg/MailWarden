@@ -106,6 +106,10 @@ def parse_message(user_id: str, account: str, data: dict[str, Any]) -> FetchedMe
         body, complete = extract_body(payload)
     except (ValueError, TypeError):  # bad base64 etc.
         body, complete = "", False
+    precedence = headers.get("precedence", "").strip().lower()
+    is_bulk = bool(headers.get("list-unsubscribe")) or precedence in ("bulk", "list", "junk")
+    if len(body.strip()) < 20:
+        log.debug("message body empty or near-empty after extraction")
     received = dt.datetime.fromtimestamp(int(data.get("internalDate", "0")) / 1000, tz=dt.UTC)
     return FetchedMessage(
         user_id=user_id,
@@ -119,6 +123,7 @@ def parse_message(user_id: str, account: str, data: dict[str, Any]) -> FetchedMe
         received_at=received,
         label_ids=tuple(data.get("labelIds") or ()),
         content_complete=complete,
+        is_bulk=is_bulk,
     )
 
 

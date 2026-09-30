@@ -53,7 +53,12 @@ def test_llm_backends_are_only_invoked_from_approved_call_sites():
 
     cli.py calls it once for `doctor --llm` with a hard-coded synthetic email.
     """
-    allowed = {PKG / "core" / "pipeline.py", PKG / "core" / "classify" / "base.py", PKG / "cli.py"}
+    allowed = {
+        PKG / "core" / "pipeline.py",
+        PKG / "core" / "classify" / "base.py",  # retry-once helper
+        PKG / "core" / "classify" / "ratelimit.py",  # rate-limit wrapper around a backend
+        PKG / "cli.py",
+    }
     offenders = []
     for path in _modules():
         for node in ast.walk(ast.parse(path.read_text())):

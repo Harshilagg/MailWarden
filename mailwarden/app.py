@@ -9,6 +9,7 @@ from mailwarden.config import Settings, home_dir, load_sender_rules, load_settin
 from mailwarden.core.classify.base import LLMBackend
 from mailwarden.core.classify.groq import GroqBackend
 from mailwarden.core.classify.ollama import OllamaBackend
+from mailwarden.core.classify.ratelimit import RateLimitedBackend
 from mailwarden.core.models import Account, ProviderKind
 from mailwarden.core.pipeline import Pipeline
 from mailwarden.providers.base import MailProvider, ProviderError
@@ -58,15 +59,20 @@ class App:
 
     def llm_backend(self) -> LLMBackend:
         s = self.settings
+        inner: LLMBackend
         if s.llm.backend == "groq":
             key = self.secrets.get(SecretKeys.groq_api_key(self.user_id)) or ""
             g = s.groq
-            return GroqBackend(
+            inner = GroqBackend(
                 self.session, key, model=g.model, reasoning_effort=g.reasoning_effort,
                 min_interval_seconds=g.min_interval_seconds, timeout_seconds=g.timeout_seconds,
             )
-        o = s.ollama
-        return OllamaBackend(self.session, base_url=o.base_url, model=o.model, timeout_seconds=o.timeout_seconds)
+        else:
+            o = s.ollama
+            inner = OllamaBackend(self.session, base_url=o.base_url, model=o.model, timeout_seconds=o.timeout_seconds)
+        return RateLimitedBackend(
+            inner, per_minute=s.llm.max_llm_calls_per_minute, per_run=s.llm.max_llm_calls_per_run
+        )
 
     def backend_description(self) -> str:
         s = self.settings
