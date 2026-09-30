@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse,
 from jinja2 import Environment, PackageLoader, select_autoescape
 
 from mailwarden.core.job_alerts import matches_filters, safe_link
-from mailwarden.core.links import gmail_link
+from mailwarden.core.links import gmail_link, safe_local_path
 from mailwarden.core.models import SLUG_PATTERN, Account, Category, GateDecision, Stage
 from mailwarden.core.overview import CATEGORY_TITLES, Digest, build_digest, urgent_items
 from mailwarden.delivery.dashboard import auth
@@ -33,7 +33,6 @@ from mailwarden.storage.base import AccountRegistry, Repository
 
 _SLUG = re.compile(SLUG_PATTERN)
 _MSG_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-_NEXT = re.compile(r"^/(?!/)[A-Za-z0-9/_\-]*(?:\?[A-Za-z0-9=&_\-]*)?$")
 _PUBLIC_PATHS = {"/login", "/static/style.css", "/static/logo-64.png", "/static/logo-180.png", "/favicon.ico"}
 STAGE_COLUMNS = (Stage.APPLIED, Stage.ASSESSMENT, Stage.INTERVIEW, Stage.OFFER, Stage.REJECTION, Stage.OTHER)
 
@@ -152,7 +151,7 @@ def create_app(deps: DashboardDeps) -> FastAPI:
         if not auth.redeem_login_code(deps.secrets, deps.user_id, code):
             return render("login.html", request, status_code=401, expired=bool(code))
         # Only same-site local paths: never an open redirect.
-        target = next if len(next) <= 200 and _NEXT.match(next) else "/"
+        target = safe_local_path(next) or "/"
         response = RedirectResponse(target, status_code=303)
         response.set_cookie(auth.COOKIE_NAME, token, max_age=auth.COOKIE_MAX_AGE, httponly=True,
                             samesite="strict", path="/")

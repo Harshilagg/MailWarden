@@ -205,9 +205,11 @@ def test_launcher_bundle(tmp_path, monkeypatch):
     from mailwarden import launcher
 
     monkeypatch.setattr(launcher.sys, "platform", "darwin")
+    monkeypatch.setattr(launcher, "framework_interpreter", lambda py: None)  # non-framework Python
     home = tmp_path / "Application Support" / "mw"
     app = launcher.build(tmp_path, "/Users/x/My Apps/python", home, run=lambda *a, **k: None)
     info = _plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
+    assert info["CFBundleURLTypes"] == [{"CFBundleURLName": "com.mailwarden.app", "CFBundleURLSchemes": ["mailwarden"]}]
     assert info["CFBundleExecutable"] == "mailwarden" and info["CFBundleIconFile"] == "mailwarden"
     assert info["CFBundleIdentifier"] == "com.mailwarden.app"
     exe = app / "Contents" / "MacOS" / "mailwarden"
@@ -217,6 +219,25 @@ def test_launcher_bundle(tmp_path, monkeypatch):
     assert _shlex.split(lines[1]) == ["export", f"MAILWARDEN_HOME={home}"]
     assert _shlex.split(lines[2]) == ["exec", "/Users/x/My Apps/python", "-m", "mailwarden", "--quiet", "app"]
     assert (app / "Contents" / "Resources" / "mailwarden.icns").read_bytes()[:4] == b"icns"
+
+
+def test_launcher_bundles_its_own_signed_interpreter(tmp_path, monkeypatch):
+    import shlex as _shlex
+
+    from mailwarden import launcher
+
+    fake = tmp_path / "Python"
+    fake.write_bytes(b"\xcf\xfa\xed\xfe fake mach-o")
+    monkeypatch.setattr(launcher.sys, "platform", "darwin")
+    monkeypatch.setattr(launcher, "framework_interpreter", lambda py: fake)
+    calls = []
+    app = launcher.build(tmp_path / "out", "/Users/x/proj/.venv/bin/python", tmp_path, run=lambda argv, **k: calls.append(argv))
+    copy = app / "Contents" / "MacOS" / "mailwarden-python"
+    assert copy.read_bytes() == fake.read_bytes() and copy.stat().st_mode & 0o111
+    assert ["/usr/bin/codesign", "--force", "--sign", "-", str(copy)] in calls
+    lines = (app / "Contents" / "MacOS" / "mailwarden").read_text().splitlines()
+    assert _shlex.split(lines[2]) == ["export", "__PYVENV_LAUNCHER__=/Users/x/proj/.venv/bin/python"]
+    assert lines[3] == 'exec "$(dirname "$0")/mailwarden-python" -m mailwarden --quiet app'
 
 
 def test_launcher_browser_mode_and_rebuild(tmp_path, monkeypatch):
@@ -234,3 +255,71 @@ def test_launcher_refuses_other_platforms(tmp_path, monkeypatch):
     monkeypatch.setattr(launcher.sys, "platform", "linux")
     with pytest.raises(RuntimeError):
         launcher.build(tmp_path, "/py", tmp_path)
+
+
+
+# --- deep links and single instance --------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "url, path",
+    [
+        ("mailwarden://i/personal/18f0a", "/i/personal/18f0a"),
+        ("mailwarden://jobs?match=1", "/jobs?match=1"),
+        ("MAILWARDEN://applications", "/applications"),
+        ("mailwarden:///evil.example.com", None),  # would become //evil...
+        ("mailwarden://i/../../etc", None),
+        ("mailwarden://x?next=https://evil", None),
+        ("https://evil.example.com", None),
+        ("mailwarden://" + "a" * 300, None),
+    ],
+)
+def test_path_from_app_link(url, path):
+    from mailwarden.core.links import path_from_app_link
+
+    assert path_from_app_link(url) == path
+
+
+def test_app_link_roundtrip():
+    from mailwarden.core.links import app_link, path_from_app_link
+
+    assert path_from_app_link(app_link("/i/personal/18f0a")) == "/i/personal/18f0a"
+
+
+def test_single_instance_handoff():
+    import os
+    import stat
+    import tempfile
+    import time
+    from pathlib import Path
+
+    from mailwarden.security.net import send_to_running_app, serve_app_socket
+
+    sock = Path(tempfile.mkdtemp(dir="/tmp")) / "app.sock"  # AF_UNIX paths must be short on macOS
+    assert send_to_running_app(sock, "/jobs") is False  # nothing running yet
+    got = []
+    serve_app_socket(sock, got.append)
+    assert stat.S_IMODE(os.stat(sock).st_mode) == 0o600
+    assert send_to_running_app(sock, "/i/personal/abc") is True
+    for _ in range(50):
+        if got:
+            break
+        time.sleep(0.02)
+    assert got == ["/i/personal/abc"]
+
+
+def test_notifier_uses_app_links_when_app_installed():
+    rec = Recorder()
+    n = DesktopNotifier(backend="terminal-notifier", dashboard_base_url="http://127.0.0.1:8765",
+                        which=lambda name: "/usr/local/bin/terminal-notifier", run=rec, click_target="app")
+    n.notify(ALERT)
+    argv = rec.calls[0]
+    assert argv[argv.index("-open") + 1] == "mailwarden://i/personal/18f0a"
+    n.notify_text("3 new jobs match your filters", "/jobs?match=1")
+    argv = rec.calls[1]
+    assert argv[argv.index("-open") + 1] == "mailwarden://jobs?match=1"
+
+
+def test_notifier_browser_links_by_default():
+    n, rec = notifier()
+    n.notify(ALERT)
+    assert rec.calls[0][rec.calls[0].index("-open") + 1].startswith("http://127.0.0.1:8765/i/")

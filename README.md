@@ -141,6 +141,9 @@ Add `--quiet` before any command for warnings-only output (used by scheduled job
 to the Dock. Clicking it opens the dashboard in its own window (macOS WebKit, not a
 browser). It uses the background dashboard if it's running, otherwise it serves one
 while the window is open. "Open in Gmail" and job links open in your default browser.
+There is only ever one window: notification clicks (`mailwarden://` links) and later
+launches bring the open window to the front at the right entry. The first launch may
+ask for Keychain access for "mailwarden-python"; choose **Always Allow**.
 
 The dashboard only listens on 127.0.0.1 and has no external assets or JavaScript.
 Signing in uses a one-time link (valid 10 minutes). After that a cookie keeps you
@@ -152,10 +155,11 @@ Job mail that needs action (an assessment, interview or offer, or an action for 
 company you're tracking or a priority sender) triggers a desktop notification
 showing only the company, stage and deadline. Clicking it opens the entry on the dashboard.
 
-- **macOS**: `brew install terminal-notifier` (free). Without it, mailwarden
-  falls back to `osascript`, which shows the notification but clicking it does
-  nothing. The `desktop-notifier` library can't be used with Homebrew's
-  unsigned Python.
+- **macOS**: `brew install terminal-notifier` (free). Clicking a notification then
+  opens the entry in the mailwarden app (if installed with `mailwarden launcher`) or
+  in your browser. Without terminal-notifier, mailwarden falls back to `osascript`,
+  and macOS attributes those notifications to Script Editor, so clicking one opens
+  Script Editor. `mailwarden doctor` warns about this.
 - **Linux / Windows**: uses `desktop-notifier`.
 - Configure under `[notifications]` in `config.toml`, or set `enabled = false`.
 

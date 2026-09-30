@@ -123,6 +123,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"keyring backend: {app.secrets.backend_name}")
     print(f"llm backend:     {app.backend_description()}")
     print(f"outbound hosts:  {', '.join(sorted(app.session.allowed))}")
+    notifier = app.notifier()
+    if notifier is None:
+        print("notifications:   off")
+    else:
+        note = ""
+        if notifier.backend == "osascript":
+            note = ("  (clicks open Script Editor: run `brew install terminal-notifier` so clicks open mailwarden)")
+        target = "the mailwarden app" if getattr(notifier, "_click_target", "") == "app" else "your browser"
+        print(f"notifications:   {notifier.backend}, clicks open {target}{note}")
     failures = 0
     for account in app.accounts.list(app.user_id):
         provider = app.provider_for(account)
@@ -241,12 +250,17 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
 
 
 def cmd_app(args: argparse.Namespace) -> int:
-    """Open the dashboard in its own native window (macOS); falls back to the browser elsewhere."""
+    """Open the dashboard in its single native window (macOS); falls back to the browser elsewhere."""
     import time
 
-    from mailwarden.security.net import local_port_open
+    from mailwarden.core.links import safe_local_path
+    from mailwarden.security.net import local_port_open, send_to_running_app
 
     app = build_app()
+    path = safe_local_path(args.path or "/") or "/"
+    socket_path = app.home / "app.sock"
+    if sys.platform == "darwin" and send_to_running_app(socket_path, path):
+        return 0  # the open window navigated and came to the front: no second window
     port = app.settings.dashboard.port
     if not local_port_open(port):
         # No background dashboard agent: serve it from this process while the window is open.
@@ -259,13 +273,12 @@ def cmd_app(args: argparse.Namespace) -> int:
             time.sleep(0.1)
         else:
             raise UsageError(f"could not start the dashboard on 127.0.0.1:{port}")
-    url = _login_url(app, args.path or "/")
     if sys.platform != "darwin":
-        webbrowser.open(url)
+        webbrowser.open(_login_url(app, path))
         return 0
     from mailwarden.delivery.desktop_app import open_window
 
-    open_window(url)
+    open_window(lambda p: _login_url(app, p), socket_path=socket_path, first_path=path)
     return 0
 
 

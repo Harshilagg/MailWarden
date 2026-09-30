@@ -89,11 +89,21 @@ class App:
     def notifier(self):
         from mailwarden.delivery.desktop_notify import DesktopNotifier
 
+        import sys
+        from importlib import resources
+
+        from mailwarden import launcher
+
         n = self.settings.notifications
         if not n.enabled or n.backend == "none":
             return None
+        # Clicks open the desktop app (single window) once `mailwarden launcher` has installed it.
+        app_installed = sys.platform == "darwin" and (launcher.default_dir() / launcher.APP_NAME).exists()
+        logo = resources.files("mailwarden.assets").joinpath("icon-1024.png")
         return DesktopNotifier(backend=n.backend, dashboard_base_url=self.dashboard_url(),
-                               click_wait_seconds=n.click_wait_seconds)
+                               click_wait_seconds=n.click_wait_seconds,
+                               click_target="app" if app_installed else "browser",
+                               content_image=str(logo) if logo.is_file() else None)
 
     def digest_sink(self):
         from mailwarden.delivery.digest_file import MarkdownDigestSink

@@ -1,7 +1,10 @@
 """macOS launcher: ~/Applications/mailwarden.app for the Dock and Spotlight.
 
-A minimal app bundle (Info.plist, icon, and a tiny shell executable). The
-executable runs one fixed command:
+A minimal app bundle: Info.plist (which registers the mailwarden:// link type
+used by notification clicks), the icon, a tiny shell executable, and a private,
+ad-hoc-signed copy of the Python interpreter stub. Running Python from inside the
+bundle makes macOS treat the window as the "mailwarden" app (one Dock icon, one
+instance), instead of as "Python". The executable runs one fixed command:
 
 - default: `python -m mailwarden app`: the dashboard in its own native window;
 - --browser: `python -m mailwarden open`: the dashboard in your default browser.
@@ -28,14 +31,28 @@ _LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/"
                "LaunchServices.framework/Support/lsregister")
 
 
-def executable_script(python: str, home: Path, *, browser: bool = False) -> str:
+INTERPRETER = "mailwarden-python"
+
+
+def framework_interpreter(python: str) -> Path | None:
+    """The real interpreter inside a macOS framework build (Python.app/Contents/MacOS/Python)."""
+    base = Path(os.path.realpath(getattr(sys, "_base_executable", python) or python))
+    # .../Python.framework/Versions/3.x/bin/python3.x -> .../Versions/3.x/Resources/Python.app/...
+    candidate = base.parent.parent / "Resources" / "Python.app" / "Contents" / "MacOS" / "Python"
+    return candidate if candidate.is_file() else None
+
+
+def executable_script(python: str, home: Path, *, browser: bool = False, bundled: bool = False) -> str:
     """The bundle's executable. Every value is shell-quoted; `exec` keeps the app's PID."""
     command = "open" if browser else "app"
-    return (
-        "#!/bin/sh\n"
-        f"export MAILWARDEN_HOME={shlex.quote(str(home))}\n"
-        f"exec {shlex.quote(python)} -m mailwarden --quiet {command}\n"
-    )
+    lines = ["#!/bin/sh", f"export MAILWARDEN_HOME={shlex.quote(str(home))}"]
+    if bundled:
+        # Run the bundle's own interpreter copy against the project's virtualenv.
+        lines.append(f"export __PYVENV_LAUNCHER__={shlex.quote(python)}")
+        lines.append(f'exec "$(dirname "$0")/{INTERPRETER}" -m mailwarden --quiet {command}')
+    else:
+        lines.append(f"exec {shlex.quote(python)} -m mailwarden --quiet {command}")
+    return "\n".join(lines) + "\n"
 
 
 def info_plist() -> bytes:
@@ -50,6 +67,7 @@ def info_plist() -> bytes:
         "CFBundleVersion": __version__,
         "LSMinimumSystemVersion": "11.0",
         "NSHighResolutionCapable": True,
+        "CFBundleURLTypes": [{"CFBundleURLName": BUNDLE_ID, "CFBundleURLSchemes": ["mailwarden"]}],
     })
 
 
@@ -63,8 +81,14 @@ def build(target_dir: Path, python: str, home: Path, *, browser: bool = False, r
     macos.mkdir(parents=True)
     res.mkdir(parents=True)
     (app / "Contents" / "Info.plist").write_bytes(info_plist())
+    interpreter = framework_interpreter(python)
+    if interpreter is not None:
+        copy = macos / INTERPRETER
+        shutil.copyfile(interpreter, copy)
+        copy.chmod(0o755)
+        run(["/usr/bin/codesign", "--force", "--sign", "-", str(copy)], check=False, capture_output=True, timeout=60)
     exe = macos / "mailwarden"
-    exe.write_text(executable_script(python, home, browser=browser))
+    exe.write_text(executable_script(python, home, browser=browser, bundled=interpreter is not None))
     exe.chmod(0o755)
     with resources.as_file(resources.files("mailwarden.assets").joinpath("mailwarden.icns")) as icon:
         shutil.copyfile(icon, res / "mailwarden.icns")

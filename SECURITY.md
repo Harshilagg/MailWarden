@@ -217,6 +217,14 @@ no cookies or site data are written to disk; each launch signs in with a fresh
 one-time code. Links that open in a new tab go to the default browser. The
 dashboard's security headers and CSP apply unchanged.
 
+The app registers the `mailwarden://` link type so notification clicks reach the
+single open window. Such a link (from a notification or any web page) can only
+navigate the window to a validated, read-only dashboard path (`/`, `/jobs?match=1`,
+`/i/<account>/<id>` ...); state changes still need a CSRF-protected click. Later
+launches hand over to the open window through a Unix socket in the mailwarden home
+(mode 600, owner-only). The app bundle runs an ad-hoc-signed copy of the Python
+interpreter stub so macOS identifies the window as the mailwarden app.
+
 ## Notifications
 
 Notifications are local. They show only company, stage and deadline, or

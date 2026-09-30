@@ -21,6 +21,7 @@ import webbrowser
 from collections.abc import Callable
 from typing import Any
 
+from mailwarden.core.links import app_link, safe_local_path
 from mailwarden.core.text import clean
 from mailwarden.delivery.base import JobAlert, Notifier
 
@@ -44,8 +45,13 @@ class DesktopNotifier(Notifier):
         platform: str = sys.platform,
         which: Callable[[str], str | None] = shutil.which,
         run: Callable[..., Any] = subprocess.run,
+        click_target: str = "browser",
+        content_image: str | None = None,
     ) -> None:
         self._base = dashboard_base_url.rstrip("/")
+        # "app": clicks open mailwarden:// links, handled by the (single) desktop app window.
+        self._click_target = click_target
+        self._content_image = content_image
         self._click_wait = click_wait_seconds
         self._run = run
         self._which = which
@@ -59,15 +65,18 @@ class DesktopNotifier(Notifier):
         return "desktop-notifier"
 
     def url_for(self, alert: JobAlert) -> str:
-        return f"{self._base}/i/{alert.account}/{alert.message_id}"
+        return self._url(f"/i/{alert.account}/{alert.message_id}")
+
+    def _url(self, path: str) -> str:
+        path = safe_local_path(path) or "/"
+        return app_link(path) if self._click_target == "app" else f"{self._base}{path}"
 
     def notify(self, alert: JobAlert) -> None:
         self._send(notification_text(alert), self.url_for(alert), f"mailwarden-{alert.message_id[:40]}")
 
     def notify_text(self, text: str, dashboard_path: str) -> None:
         text = clean(text).replace("\n", " ").strip().lstrip("-")[:120]
-        path = dashboard_path if dashboard_path.startswith("/") else "/"
-        self._send(text, f"{self._base}{path}", "mailwarden-notice")
+        self._send(text, self._url(dashboard_path), "mailwarden-notice")
 
     def _send(self, text: str, url: str, group: str) -> None:
         try:
@@ -84,10 +93,10 @@ class DesktopNotifier(Notifier):
         exe = self._which("terminal-notifier")
         if not exe:
             raise FileNotFoundError("terminal-notifier")
-        self._run(
-            [exe, "-title", APP_TITLE, "-message", text, "-open", url, "-group", group],
-            check=False, timeout=15, capture_output=True,
-        )
+        argv = [exe, "-title", APP_TITLE, "-message", text, "-open", url, "-group", group]
+        if self._content_image:
+            argv += ["-contentImage", self._content_image]  # the mailwarden logo, shown in the notification
+        self._run(argv, check=False, timeout=15, capture_output=True)
 
     def _osascript(self, text: str) -> None:
         # Text is passed as argv, never interpolated into the script: no AppleScript injection.

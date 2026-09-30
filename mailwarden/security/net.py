@@ -90,3 +90,62 @@ def local_port_open(port: int, timeout: float = 0.5) -> bool:
             return True
     except OSError:
         return False
+
+
+# --- single-instance hand-off for the desktop app (Unix domain socket, owner-only) -----
+
+_IPC_MAX = 1024
+
+
+def send_to_running_app(socket_path, path: str, timeout: float = 1.0) -> bool:
+    """Ask an already-running desktop app to show ``path``. False if none is running."""
+    import json
+
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect(str(socket_path))
+            s.sendall(json.dumps({"path": path}).encode()[:_IPC_MAX])
+            s.shutdown(socket.SHUT_WR)
+            return s.recv(16) == b"ok"
+    except OSError:
+        return False
+
+
+def serve_app_socket(socket_path, on_path):
+    """Listen on a 0600 Unix socket; call ``on_path(path)`` for each request. Returns the thread."""
+    import json
+    import os
+    import threading
+
+    path = str(socket_path)
+    if os.path.exists(path):
+        os.unlink(path)  # stale socket from a previous crash
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    old = os.umask(0o177)
+    try:
+        server.bind(path)
+    finally:
+        os.umask(old)
+    os.chmod(path, 0o600)
+    server.listen(4)
+
+    def loop() -> None:
+        while True:
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            with conn:
+                try:
+                    conn.settimeout(2)
+                    data = conn.recv(_IPC_MAX)
+                    target = json.loads(data.decode("utf-8")).get("path", "/")
+                    on_path(target if isinstance(target, str) else "/")
+                    conn.sendall(b"ok")
+                except (OSError, ValueError):
+                    continue
+
+    thread = threading.Thread(target=loop, name="mailwarden-app-ipc", daemon=True)
+    thread.start()
+    return thread
