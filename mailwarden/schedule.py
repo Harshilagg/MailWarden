@@ -9,6 +9,7 @@ systemd timers use Persistent=true for the same reason; Windows uses StartWhenAv
 from __future__ import annotations
 
 import plistlib
+import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,13 +61,16 @@ def launchd(home: Path, python: str, digest_times: list[str], interval_minutes: 
 
 
 def launchd_instructions(out: Path) -> str:
-    return "\n".join(
-        [
-            f"mkdir -p ~/Library/LaunchAgents && cp {out}/{LABEL}.*.plist ~/Library/LaunchAgents/",
-            *[f"launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/{LABEL}.{n}.plist" for n in ("run", "digest", "dashboard")],
-            "# to remove: launchctl bootout gui/$(id -u)/com.mailwarden.run (and .digest, .dashboard)",
-        ]
-    )
+    # Paths are shell-quoted ("Application Support" has a space); no comment lines,
+    # because zsh does not treat pasted "# ..." lines as comments.
+    names = ("run", "digest", "dashboard")
+    install = [
+        "mkdir -p ~/Library/LaunchAgents",
+        *[f"cp {shlex.quote(str(out / f'{LABEL}.{n}.plist'))} ~/Library/LaunchAgents/" for n in names],
+        *[f"launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/{LABEL}.{n}.plist" for n in names],
+    ]
+    remove = [f"launchctl bootout gui/$(id -u)/{LABEL}.{n}" for n in names]
+    return "\n".join(install) + "\n\nTo remove them later:\n\n" + "\n".join(remove)
 
 
 # --- Linux ---------------------------------------------------------------------------
@@ -100,7 +104,7 @@ def systemd(home: Path, python: str, digest_times: list[str], interval_minutes: 
 def systemd_instructions(out: Path) -> str:
     return "\n".join(
         [
-            f"mkdir -p ~/.config/systemd/user && cp {out}/mailwarden-* ~/.config/systemd/user/",
+            f"mkdir -p ~/.config/systemd/user && cp {shlex.quote(str(out))}/mailwarden-* ~/.config/systemd/user/",
             "systemctl --user daemon-reload",
             "systemctl --user enable --now mailwarden-run.timer mailwarden-digest.timer mailwarden-dashboard.service",
         ]

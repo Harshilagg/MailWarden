@@ -181,3 +181,18 @@ def test_schedule_command_writes_files(tmp_path, monkeypatch):
     out = tmp_path / "mw" / "schedule" / "linux"
     assert (out / "mailwarden-run.timer").exists()
     assert oct(out.stat().st_mode & 0o777) == "0o700"
+
+
+def test_install_commands_quote_paths_and_have_no_comment_lines(tmp_path):
+    import shlex as _shlex
+
+    from mailwarden.schedule import launchd_instructions, systemd_instructions
+
+    out = tmp_path / "Application Support" / "mailwarden" / "schedule" / "macos"
+    text = launchd_instructions(out)
+    for line in text.splitlines():
+        assert not line.lstrip().startswith("#")
+        if line.startswith("cp "):
+            assert len(_shlex.split(line)) == 3  # the spaced path stays one argument
+    assert "launchctl bootout gui/$(id -u)/com.mailwarden.dashboard" in text
+    assert "'" in systemd_instructions(out)
