@@ -166,6 +166,8 @@ class App:
             job_locations=self.settings.job_alerts.target_locations,
             profile_loader=self.profile,
             job_actions=self.job_actions(),
+            watchlist=self.settings.job_alerts.watchlist,
+            apply_today_count=self.settings.job_alerts.apply_today_count,
         )
         return create_app(deps)
 

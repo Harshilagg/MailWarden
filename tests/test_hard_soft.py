@@ -225,7 +225,6 @@ def test_matches_filters():
 
 
 def test_jobs_deduplicated_across_senders_and_daily_notice(tmp_path, secret_store):
-    from mailwarden.core.digest_job import maybe_notify_new_jobs
     from mailwarden.core.job_alerts import dedup_key
     from mailwarden.core.models import JobPost
     from mailwarden.storage.sqlite_store import SQLCipherRepository
@@ -249,10 +248,14 @@ def test_jobs_deduplicated_across_senders_and_daily_notice(tmp_path, secret_stor
         def notify_text(self, text, path):
             sent.append((text, path))
 
-    kw, loc = ["backend"], ["Bengaluru"]
-    assert maybe_notify_new_jobs(repo, "local", now=now, keywords=kw, locations=loc, notifier=N()) == 1
-    assert sent == [("1 new job matches your filters", "/jobs?match=1")]
-    assert maybe_notify_new_jobs(repo, "local", now=now + dt.timedelta(hours=6), keywords=kw, locations=loc,
+    from mailwarden.core.digest_job import maybe_notify_top_jobs
+
+    job_id = repo.list_jobs("local")[0].id
+    assert maybe_notify_top_jobs(repo, "local", now=now, profile=None, notifier=N()) == 0  # not scored yet
+    repo.save_score("local", job_id, score=7.5, level="full", detail={}, input_hash="h")
+    assert maybe_notify_top_jobs(repo, "local", now=now, profile=None, notifier=N()) == 1
+    assert sent == [("1 new job scored 7+", "/apply")]
+    assert maybe_notify_top_jobs(repo, "local", now=now + dt.timedelta(hours=6), profile=None,
                                  notifier=N()) == 0  # once per day
     assert len(sent) == 1
     repo.close()

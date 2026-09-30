@@ -102,8 +102,12 @@ class JobAlertSettings(_Section):
     # A job matches when its title contains a keyword AND (its location matches, or is unknown).
     target_keywords: list[str] = ["software engineer", "backend", "full stack", "sde"]
     target_locations: list[str] = ["Bengaluru", "Remote"]
-    # At most one "N new jobs match your filters" notification per day (sent with the digest).
+    # At most one "N new jobs scored 7+" notification per day (sent with the digest).
     daily_notification: bool = True
+    # Companies you especially want: +1 to their jobs' rank (names, e.g. "Razorpay", "Google").
+    watchlist: list[str] = []
+    # How many jobs the "Apply today" view shows.
+    apply_today_count: int = Field(default=8, ge=1, le=50)
     # Automatically fetch job descriptions for candidates hosted on Greenhouse, Lever or Ashby,
     # through their public job-board APIs (fixed hosts, no cookies, cached 7 days).
     jd_auto_fetch: bool = True

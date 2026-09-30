@@ -418,3 +418,37 @@ def test_scores_show_level_and_details(env):
     html = client(env).get("/jobs").text
     assert "6.5 · preliminary" in html and "Good Go overlap." in html
     assert "Lead with: Observable Job Queue" in html and "Missing: Kafka" in html
+
+
+def test_apply_today_view(env):
+    env.profile_loader = lambda: PROFILE
+    env.watchlist = ["Zeta"]
+    _jobs(env)
+    repo = env.repo_factory()
+    job_id = next(j.id for j in repo.list_jobs("local") if j.title == "Backend Engineer")
+    repo.save_score("local", job_id, score=6.0, level="preliminary", input_hash="h",
+                    detail={"matched_skills": [], "missing_skills": ["Kafka"], "evidence": [],
+                            "best_project": "Observable Job Queue", "why": "Your Go work fits."})
+    repo.close()
+    c = client(env)
+    html = c.get("/apply").text
+    assert "Backend Engineer" in html and "Marketing Intern" not in html  # filtered job not picked
+    assert "score 6.0 (preliminary) · fresh +0.5" in html  # received just now
+    assert "Lead with: <strong>Observable Job Queue</strong>" in html and "Paste or fetch the job description" in html
+    assert "Apply today (1)" in c.get("/jobs").text
+    r = c.post(f"/jobs/{job_id}/dismiss", content=f"csrf={_csrf(env)}&view=apply",
+               headers={"content-type": "application/x-www-form-urlencoded"})
+    assert r.status_code == 303 and r.headers["location"] == "/apply"
+    assert "Backend Engineer" not in c.get("/apply").text
+    assert "Backend Engineer" not in c.get("/jobs?view=all").text  # you dismissed it: gone from both views
+
+
+def test_already_applied_label(env):
+    env.profile_loader = lambda: PROFILE
+    _jobs(env)
+    repo = env.repo_factory()
+    repo.upsert_application(Application(user_id="local", company="Zeta", role="Backend Engineer",
+                                        current_stage=Stage.APPLIED, last_update=NOW),
+                            event_stage=Stage.APPLIED, account="personal", message_id="a1", occurred_at=NOW, domain=None)
+    repo.close()
+    assert "Already applied" in client(env).get("/jobs?view=all").text

@@ -7,11 +7,12 @@
 A <em>preliminary</em> score comes from the alert alone (at most 7); a <em>full</em> score uses the job description.
 {% else %}Build your profile (<code>mailwarden profile build</code>) to filter and score jobs.{% endif %}</p>
 <p class="filters">
+  <a href="/apply">Apply today ({{ apply_n }})</a>
   <a href="/jobs?view=candidates&sort={{ sort }}"{% if view == "candidates" %} aria-current="page"{% endif %}>Candidates ({{ counts.candidates }})</a>
   <a href="/jobs?view=all&sort={{ sort }}"{% if view == "all" %} aria-current="page"{% endif %}>All ({{ counts.all }})</a>
   <a href="/jobs?view=filtered&sort={{ sort }}"{% if view == "filtered" %} aria-current="page"{% endif %}>Filtered ({{ counts.filtered }})</a>
   <span class="meta">Sort:</span>
-  <a href="/jobs?view={{ view }}&sort=score"{% if sort == "score" %} aria-current="page"{% endif %}>Best score</a>
+  <a href="/jobs?view={{ view }}&sort=score"{% if sort == "score" %} aria-current="page"{% endif %}>Best match</a>
   <a href="/jobs?view={{ view }}&sort=newest"{% if sort == "newest" %} aria-current="page"{% endif %}>Newest</a>
 </p>
 {% if actions and view != "filtered" %}
@@ -25,7 +26,7 @@ A <em>preliminary</em> score comes from the alert alone (at most 7); a <em>full<
 {% for r in rows %}{% set j = r.job %}
   <li class="job{% if r.match %} match{% endif %}" id="job-{{ j.id }}">
     <div class="job-main">
-      <span class="job-title">{% if j.score is not none %}<span class="pill">{{ "%.1f"|format(j.score) }} · {{ j.score_level }}</span> {% endif %}{{ j.title }}</span>
+      <span class="job-title">{% if j.score is not none %}<span class="pill">{{ "%.1f"|format(j.score) }} · {{ j.score_level }}</span> {% endif %}{{ j.title }}{% if r.rank.applied %} <span class="pill">Already applied</span>{% endif %}{% if r.rank.watchlist %} <span class="pill">Watchlist</span>{% endif %}</span>
       <span class="meta">{{ j.company or "Company not listed" }}{% if j.location %} · {{ j.location }}{% endif %}{% if j.details %} · {{ j.details }}{% endif %}</span>
       {% if j.why %}<span class="summary">{{ j.why }}</span>{% endif %}
       {% if j.best_project %}<span class="meta">Lead with: {{ j.best_project }}</span>{% endif %}

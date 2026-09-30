@@ -64,8 +64,12 @@ markdown_dir = ""
 # Matching jobs are highlighted: title contains a keyword AND location matches (or is unknown).
 target_keywords = ["software engineer", "backend", "full stack", "sde"]
 target_locations = ["Bengaluru", "Remote"]
-# At most one "N new jobs match your filters" notification per day, never one per alert email.
+# At most one "N new jobs scored 7+" notification per day, never one per alert email.
 daily_notification = true
+# Companies you especially want: their jobs get +1 rank in "Apply today".
+watchlist = []
+# How many jobs "Apply today" shows.
+apply_today_count = 8
 # Fetch job descriptions automatically for candidates on Greenhouse, Lever or Ashby (public APIs).
 jd_auto_fetch = true
 # "Fetch job description" buttons (allowlisted hiring systems only). Opt-in: set true to enable.

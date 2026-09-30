@@ -133,6 +133,13 @@ Add `--quiet` before any command for warnings-only output (used by scheduled job
   `[job_alerts] target_keywords` and `target_locations` are highlighted. Each row has
   **Open** and **Dismiss**, and there's a "Matches only" filter. At most one
   "N new jobs match your filters" notification per day.
+- **Apply today** (`/apply`, also a tab on Job alerts): your top `[job_alerts]
+  apply_today_count` jobs (default 8) by rank. Rank is the fit score, +0.5 if seen in the
+  last 3 days, -1 if older than 3 weeks, and +1 for companies on `[job_alerts] watchlist`,
+  with full scores ahead of preliminary at equal rank. Jobs you've applied to (company +
+  role in Applications) and dismissed jobs are skipped. Each card shows the score
+  breakdown, why, the project to lead with and missing skills. One notification a day:
+  "N new jobs scored 7+".
 - **Digest**: the latest digest, grouped by category, with one-line summaries.
 - **Sensitive**: counts by sender only.
 - **Settings**: the classifier, allowed outbound hosts, accounts and sender tiers (read-only).

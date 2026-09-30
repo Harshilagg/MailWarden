@@ -321,7 +321,7 @@ def cmd_open(args: argparse.Namespace) -> int:
 
 
 def cmd_digest(args: argparse.Namespace) -> int:
-    from mailwarden.core.digest_job import maybe_notify_new_jobs, run_digest
+    from mailwarden.core.digest_job import maybe_notify_top_jobs, run_digest
 
     app = build_app()
     repo = app.repository()
@@ -331,12 +331,12 @@ def cmd_digest(args: argparse.Namespace) -> int:
         ja = app.settings.job_alerts
         matched = 0
         if ja.daily_notification:
-            matched = maybe_notify_new_jobs(repo, app.user_id, now=now, keywords=ja.target_keywords,
-                                            locations=ja.target_locations, notifier=app.notifier())
+            matched = maybe_notify_top_jobs(repo, app.user_id, now=now, profile=app.profile(),
+                                            notifier=app.notifier())
     finally:
         repo.close()
     if matched:
-        print(f"notified: {matched} new job(s) match your filters")
+        print(f"notified: {matched} new job(s) scored 7+")
     sections = ", ".join(f"{k} {len(v)}" for k, v in d.sections.items()) or "no new mail"
     print(f"digest: {d.urgent} urgent, {sections}, {sum(d.sensitive_by_sender.values())} sensitive, {d.ignored} ignored")
     if app.settings.digest.markdown_dir:

@@ -70,6 +70,8 @@ class DashboardDeps:
     profile_loader: Callable[[], dict | None] = lambda: None
     #: Job-description buttons (core.job_scoring.JobActions); None disables them.
     job_actions: object | None = None
+    watchlist: list[str] = field(default_factory=list)
+    apply_today_count: int = 8
     now: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.UTC)
 
 
@@ -242,11 +244,15 @@ def create_app(deps: DashboardDeps) -> FastAPI:
         from mailwarden.core.prefilter import prefilter
         from mailwarden.profile import match_role
 
+        from mailwarden.core.ranking import AppliedIndex, rank_job
+
         repo = deps.repo_factory()
         try:
             stored = repo.list_jobs(deps.user_id)
+            applied = AppliedIndex.from_applications(repo.list_applications(deps.user_id))
         finally:
             repo.close()
+        now = deps.now()
         targets = list((profile or {}).get("target_roles") or [])
         actions = deps.job_actions
         button = bool(actions and getattr(actions, "button_fetch_enabled", False))
@@ -261,7 +267,8 @@ def create_app(deps: DashboardDeps) -> FastAPI:
             can_fetch = bool(actions) and j.jd_status != "ok" and (p.automatic or (button and p.kind != "none"))
             rows.append({"job": j, "match": highlight and not (verdict and verdict.excluded),
                          "link": safe_link(j.link), "verdict": verdict, "can_fetch": can_fetch,
-                         "why_not": p.why_not if p.kind == "none" else None})
+                         "why_not": p.why_not if p.kind == "none" else None,
+                         "rank": rank_job(j, now=now, watchlist=deps.watchlist, applied=applied)})
         return rows, targets
 
     @app.get("/jobs")
@@ -282,14 +289,40 @@ def create_app(deps: DashboardDeps) -> FastAPI:
             rows = [r for r in rows if not (r["verdict"] and r["verdict"].excluded)]
         elif view == "filtered":
             rows = excluded
-        if sort == "score":  # full scores before preliminary at equal score; unscored last
-            rows.sort(key=lambda r: (r["job"].score is None, -(r["job"].score or 0),
-                                     r["job"].score_level != "full", -r["job"].received_at.timestamp()))
-        return render("jobs.html", request, rows=rows, view=view, sort=sort, counts=counts,
+        if sort == "score":  # by rank; full before preliminary at equal rank; unscored last
+            from mailwarden.core.ranking import sort_key
+
+            rows.sort(key=lambda r: sort_key(r["job"], r["rank"]))
+        apply_n = len(_apply_picks(profile))
+        return render("jobs.html", request, rows=rows, view=view, sort=sort, counts=counts, apply_n=apply_n,
                       has_profile=profile is not None, targets=targets, keywords=deps.job_keywords,
                       locations=deps.job_locations, actions=deps.job_actions is not None)
 
+    def _apply_picks(profile: dict | None):
+        from mailwarden.core.ranking import AppliedIndex, apply_today
+
+        repo = deps.repo_factory()
+        try:
+            jobs = repo.list_jobs(deps.user_id)
+            applied = AppliedIndex.from_applications(repo.list_applications(deps.user_id))
+        finally:
+            repo.close()
+        return apply_today(jobs, profile, n=deps.apply_today_count, now=deps.now(), watchlist=deps.watchlist,
+                           applied=applied)
+
+    @app.get("/apply")
+    def apply_view(request: Request) -> Response:
+        try:
+            profile = deps.profile_loader()
+        except Exception:
+            profile = None
+        picks = [{"job": j, "rank": info, "link": safe_link(j.link)} for j, info in _apply_picks(profile)]
+        return render("apply.html", request, picks=picks, n=deps.apply_today_count, has_profile=profile is not None,
+                      watchlist=deps.watchlist)
+
     def _back(form: dict[str, str], job_id: int | None = None) -> RedirectResponse:
+        if form.get("view") == "apply":
+            return RedirectResponse("/apply", status_code=303)
         view = form.get("view", "candidates")
         view = view if view in ("candidates", "all", "filtered") else "candidates"
         sort = form.get("sort", "score")

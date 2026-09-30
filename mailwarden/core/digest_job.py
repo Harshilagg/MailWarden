@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import datetime as dt
 
-from mailwarden.core.job_alerts import matches_filters
 from mailwarden.core.overview import Digest, build_digest, digest_markdown
 from mailwarden.delivery.base import DigestSink, Notifier
 from mailwarden.storage.base import Repository
@@ -29,26 +28,28 @@ NOTICE_DATE_KEY = "jobs_notice_date"
 NOTICE_AT_KEY = "jobs_notice_at"
 
 
-def maybe_notify_new_jobs(
+def maybe_notify_top_jobs(
     repo: Repository,
     user_id: str,
     *,
     now: dt.datetime,
-    keywords: list[str],
-    locations: list[str],
+    profile: dict | None,
     notifier: Notifier | None,
 ) -> int:
-    """At most once per local day: '<N> new jobs match your filters'. Returns N (0 if not sent)."""
+    """At most once per local day: '<N> new jobs scored 7+'. Returns N (0 if not sent)."""
+    from mailwarden.core.ranking import AppliedIndex, new_strong_jobs
+
     today = now.astimezone().date().isoformat()
     if repo.get_state(user_id, NOTICE_DATE_KEY) == today:
         return 0
     last = repo.get_state(user_id, NOTICE_AT_KEY)
     since = dt.datetime.fromisoformat(last) if last else now - DEFAULT_WINDOW
-    n = sum(1 for j in repo.list_jobs(user_id, since=since) if matches_filters(j.title, j.location, keywords, locations))
+    applied = AppliedIndex.from_applications(repo.list_applications(user_id))
+    n = new_strong_jobs(repo.list_jobs(user_id), profile, since=since, applied=applied)
     if n == 0:
         return 0
     if notifier is not None:
-        notifier.notify_text(f"{n} new job{'s match' if n != 1 else ' matches'} your filters", "/jobs?match=1")
+        notifier.notify_text(f"{n} new job{'s' if n != 1 else ''} scored 7+", "/apply")
     repo.set_state(user_id, NOTICE_DATE_KEY, today)
     repo.set_state(user_id, NOTICE_AT_KEY, now.isoformat())
     return n
