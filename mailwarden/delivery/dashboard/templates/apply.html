@@ -21,7 +21,7 @@ Jobs you've applied to (company + role in Applications) and dismissed jobs are s
   {% if j.missing_skills %}<p class="meta">Missing: {{ j.missing_skills|join(", ") }}</p>{% endif %}
   {% if j.score_level == "preliminary" %}<p class="meta">Preliminary score (from the alert only). <a href="/jobs?view=all#job-{{ j.id }}">Paste or fetch the job description</a> for a full score.</p>{% endif %}
   <div class="card-foot">
-    <span class="meta">via {{ j.sender }} · {{ j.received_at|ago }}</span>
+    <span class="meta">via {{ j.source_name or j.sender }} · {{ j.received_at|ago }}{% if j.also_on %} · also on: {{ j.also_on|join(", ") }}{% endif %}</span>
     <span class="actions">
       {% if p.link %}<a class="button" href="{{ p.link }}" target="_blank" rel="noopener noreferrer">Open</a>{% endif %}
       <form method="post" action="/jobs/{{ j.id }}/dismiss" class="inline">

@@ -133,6 +133,14 @@ Add `--quiet` before any command for warnings-only output (used by scheduled job
   `[job_alerts] target_keywords` and `target_locations` are highlighted. Each row has
   **Open** and **Dismiss**, and there's a "Matches only" filter. At most one
   "N new jobs match your filters" notification per day.
+- Job alerts has **source chips**: filter by type (job boards, company careers, startup
+  platforms, communities, company alerts via hiring systems) and by source (LinkedIn,
+  Naukri, Naukri Campus, Internshala, Cutshort, "Bayer (jobs2web)" ...), with counts,
+  built only from sources that have produced jobs. The same job from several sources
+  (same company, title and city) is one card, which lists the others under "also on".
+  Titles like "SAP EAM - Bangalore, IN" become title "SAP EAM" with location
+  "Bangalore", and relay names become real companies (Amex Careers → American Express,
+  EYJobAlerts → EY).
 - **Apply today** (`/apply`, also a tab on Job alerts): your top `[job_alerts]
   apply_today_count` jobs (default 8) by rank. Rank is the fit score, +0.5 if seen in the
   last 3 days, -1 if older than 3 weeks, and +1 for companies on `[job_alerts] watchlist`,

@@ -9,6 +9,8 @@ from mailwarden.core.models import (
 from mailwarden.delivery.dashboard import auth
 from mailwarden.delivery.dashboard.app import DashboardDeps, create_app
 from mailwarden.delivery.dashboard.server import UnsafeBind, serve
+from mailwarden.core.job_alerts import dedup_key
+from mailwarden.core.models import JobPost
 from mailwarden.storage.keyring_accounts import KeyringAccountRegistry
 from mailwarden.storage.sqlite_store import SQLCipherRepository
 
@@ -452,3 +454,25 @@ def test_already_applied_label(env):
                             event_stage=Stage.APPLIED, account="personal", message_id="a1", occurred_at=NOW, domain=None)
     repo.close()
     assert "Already applied" in client(env).get("/jobs?view=all").text
+
+
+def test_source_chips_and_also_on(env):
+    env.profile_loader = lambda: PROFILE
+    repo = env.repo_factory()
+    for mid, src, stype, title in [("m1", "LinkedIn", "job_board", "Backend Engineer"),
+                                   ("m2", "Naukri", "job_board", "Backend Engineer"),
+                                   ("m3", "Cutshort", "startup_platform", "Platform Engineer")]:
+        post = JobPost(title=title, company="Zeta", location="Bengaluru")
+        repo.save_jobs("local", account="personal", message_id=mid, sender=src, received_at=NOW, posts=[post],
+                       keys=[dedup_key(post, src)], source_type=stype, source_name=src)
+    repo.close()
+    c = client(env)
+    html = c.get("/jobs?view=all").text
+    assert "Job boards (1)" in html and "Startup platforms (1)" in html
+    assert "LinkedIn (1)" in html and "Naukri (1)" in html and "Cutshort (1)" in html
+    assert "via LinkedIn" in html and "also on: Naukri" in html
+    only = c.get("/jobs?view=all&type=startup_platform").text
+    assert "Platform Engineer" in only and "Backend Engineer" not in only
+    naukri = c.get("/jobs?view=all&source=Naukri").text  # matches the merged job via 'also on'
+    assert "Backend Engineer" in naukri and "Platform Engineer" not in naukri
+    assert c.get("/jobs?view=all&type=bogus").status_code == 200

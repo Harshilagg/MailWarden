@@ -272,7 +272,10 @@ def create_app(deps: DashboardDeps) -> FastAPI:
         return rows, targets
 
     @app.get("/jobs")
-    def jobs(request: Request, view: str = "candidates", sort: str = "score", match: int = 0) -> Response:
+    def jobs(request: Request, view: str = "candidates", sort: str = "score", match: int = 0,
+             type: str = "", source: str = "") -> Response:  # noqa: A002
+        from mailwarden.core.sources import SOURCE_TYPE_LABELS
+
         if match:  # old links (/jobs?match=1) land on the candidates view
             view = "candidates"
         if view not in ("candidates", "all", "filtered"):
@@ -289,12 +292,30 @@ def create_app(deps: DashboardDeps) -> FastAPI:
             rows = [r for r in rows if not (r["verdict"] and r["verdict"].excluded)]
         elif view == "filtered":
             rows = excluded
+        # Source chips: only sources that have produced jobs in this view, with counts.
+        type_counts: dict[str, int] = {}
+        source_counts: dict[str, int] = {}
+        for r in rows:
+            t = r["job"].source_type or "other"
+            type_counts[t] = type_counts.get(t, 0) + 1
+        if type in SOURCE_TYPE_LABELS:
+            rows = [r for r in rows if (r["job"].source_type or "other") == type]
+        else:
+            type = ""  # noqa: A001
+        for r in rows:
+            for name in {r["job"].source_name or "Unknown", *r["job"].also_on}:
+                source_counts[name] = source_counts.get(name, 0) + 1
+        if source:
+            rows = [r for r in rows if source == (r["job"].source_name or "Unknown") or source in r["job"].also_on]
+        type_chips = [(t, SOURCE_TYPE_LABELS[t], n) for t, n in sorted(type_counts.items(), key=lambda kv: -kv[1])]
+        source_chips = sorted(source_counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))
         if sort == "score":  # by rank; full before preliminary at equal rank; unscored last
             from mailwarden.core.ranking import sort_key
 
             rows.sort(key=lambda r: sort_key(r["job"], r["rank"]))
         apply_n = len(_apply_picks(profile))
         return render("jobs.html", request, rows=rows, view=view, sort=sort, counts=counts, apply_n=apply_n,
+                      type=type, source=source, type_chips=type_chips, source_chips=source_chips,
                       has_profile=profile is not None, targets=targets, keywords=deps.job_keywords,
                       locations=deps.job_locations, actions=deps.job_actions is not None)
 

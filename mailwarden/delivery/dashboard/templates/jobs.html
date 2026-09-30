@@ -15,6 +15,19 @@ A <em>preliminary</em> score comes from the alert alone (at most 7); a <em>full<
   <a href="/jobs?view={{ view }}&sort=score"{% if sort == "score" %} aria-current="page"{% endif %}>Best match</a>
   <a href="/jobs?view={{ view }}&sort=newest"{% if sort == "newest" %} aria-current="page"{% endif %}>Newest</a>
 </p>
+{% set qs = "view=" ~ view ~ "&sort=" ~ sort %}
+{% if type_chips %}
+<p class="filters">
+  <span class="meta">Source type:</span>
+  <a href="/jobs?{{ qs }}"{% if not type %} aria-current="page"{% endif %}>All types</a>
+  {% for t, label, n in type_chips %}<a href="/jobs?{{ qs }}&type={{ t|urlencode }}"{% if type == t %} aria-current="page"{% endif %}>{{ label }} ({{ n }})</a>{% endfor %}
+</p>
+<p class="filters">
+  <span class="meta">Source:</span>
+  <a href="/jobs?{{ qs }}{% if type %}&type={{ type|urlencode }}{% endif %}"{% if not source %} aria-current="page"{% endif %}>All sources</a>
+  {% for name, n in source_chips %}<a href="/jobs?{{ qs }}{% if type %}&type={{ type|urlencode }}{% endif %}&source={{ name|urlencode }}"{% if source == name %} aria-current="page"{% endif %}>{{ name }} ({{ n }})</a>{% endfor %}
+</p>
+{% endif %}
 {% if actions and view != "filtered" %}
 <form method="post" action="/jobs/fetch-top" class="inline">
   <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="view" value="{{ view }}"><input type="hidden" name="sort" value="{{ sort }}">
@@ -31,7 +44,7 @@ A <em>preliminary</em> score comes from the alert alone (at most 7); a <em>full<
       {% if j.why %}<span class="summary">{{ j.why }}</span>{% endif %}
       {% if j.best_project %}<span class="meta">Lead with: {{ j.best_project }}</span>{% endif %}
       {% if j.missing_skills %}<span class="meta">Missing: {{ j.missing_skills|join(", ") }}</span>{% endif %}
-      <span class="meta">via {{ j.sender }} · {{ j.received_at|ago }}</span>
+      <span class="meta">via {{ j.source_name or j.sender }} · {{ j.received_at|ago }}{% if j.also_on %} · also on: {{ j.also_on|join(", ") }}{% endif %}</span>
       {% if r.verdict and r.verdict.excluded %}<span class="meta"><span class="pill">Filtered</span> {{ r.verdict.reasons|join("; ") }}</span>{% endif %}
       {% if j.jd_status == "ok" %}<span class="meta">Job description: {% if j.jd_source == "paste" %}pasted{% else %}fetched ({{ j.jd_source }}){% endif %}</span>
       {% elif j.jd_status == "unavailable" %}<span class="meta">Job description unavailable: {{ j.jd_reason }}</span>

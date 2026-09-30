@@ -261,11 +261,15 @@ class Runner:
             return
         if not posts:
             return
+        from mailwarden.core.sources import classify_source
+
         sender = triage.sender or msg.sender_name
+        source_type, source_name = classify_source(msg.sender_address, sender)
         stats.jobs_found += len(posts)
         stats.jobs_new += self._repo.save_jobs(
             self._user_id, account=account.name, message_id=msg.message_id, sender=sender,
             received_at=msg.received_at, posts=posts, keys=[dedup_key(p, sender) for p in posts],
+            source_type=source_type, source_name=source_name,
         )
 
     def _alert(self, alert: JobAlert, stats: RunStats) -> None:

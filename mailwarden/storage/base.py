@@ -77,7 +77,8 @@ class Repository(ABC):
     # job alerts
     @abstractmethod
     def save_jobs(self, user_id: str, *, account: str, message_id: str, sender: str,
-                  received_at: dt.datetime, posts: list[JobPost], keys: list[str]) -> int:
+                  received_at: dt.datetime, posts: list[JobPost], keys: list[str],
+                  source_type: str | None = None, source_name: str | None = None) -> int:
         """Store jobs, de-duplicated by key across senders. Returns how many were new."""
 
     @abstractmethod

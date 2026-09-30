@@ -213,6 +213,10 @@ class StoredJob(BaseModel):
     received_at: dt.datetime
     dismissed: bool = False
     details: str | None = None
+    source_type: str | None = None
+    source_name: str | None = None
+    #: Other sources the same job was seen on (names), in order.
+    also_on: tuple[str, ...] = ()
     # job description: status None (not tried) | "ok" | "unavailable"
     jd_status: str | None = None
     jd_reason: str | None = None

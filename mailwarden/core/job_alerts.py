@@ -64,12 +64,20 @@ def canonical_link(url: str) -> str:
 
 
 def dedup_key(post: JobPost, fallback_sender: str) -> str:
+    """Same job across sources: normalised company + title + city ('' when the city is unknown)."""
+    from mailwarden.core.sources import location_key
+
     title = role_key(post.title)
     if post.company and company_key(post.company):
-        return f"c:{company_key(post.company)}|t:{title}"
+        return f"c:{company_key(post.company)}|t:{title}|l:{location_key(post.location)}"
     if post.link:
         return f"l:{canonical_link(post.link)}"
     return f"s:{company_key(fallback_sender)}|t:{title}"
+
+
+def key_without_location(key: str) -> str | None:
+    """'c:acme|t:sde|l:bengaluru' -> 'c:acme|t:sde|l:' (for matching sightings with no city)."""
+    return key[: key.rindex("|l:") + 3] if key.startswith("c:") and "|l:" in key else None
 
 
 def _clean_line(line: str) -> str:
@@ -78,13 +86,16 @@ def _clean_line(line: str) -> str:
 
 def _post(title: str, company: str | None, location: str | None, link: str | None,
           details: str | None = None) -> JobPost | None:
-    title = _clean_line(title)[:200]
+    from mailwarden.core.sources import display_company, split_title_location
+
+    title, location = split_title_location(_clean_line(title), _clean_line(location) if location else None)
+    title = title[:200]
     if len(title) < 2 or _URL.search(title):
         return None
     return JobPost(
         title=title,
-        company=(_clean_line(company)[:200] or None) if company else None,
-        location=(_clean_line(location)[:200] or None) if location else None,
+        company=display_company(_clean_line(company)) if company else None,
+        location=(location[:200] or None) if location else None,
         link=safe_link(link),
         details=(_clean_line(details)[:500] or None) if details else None,
     )

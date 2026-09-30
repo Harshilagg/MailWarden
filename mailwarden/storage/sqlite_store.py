@@ -31,7 +31,7 @@ from mailwarden.security.fs import check_private, ensure_private_dir
 from mailwarden.security.secrets import SecretKeys, SecretStore
 from mailwarden.storage.base import ApplicationEvent, Repository
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # Columns added after v1: (name, SQL type). Applied with ALTER TABLE on open.
 _MESSAGE_COLUMNS_V2 = (
@@ -107,6 +107,17 @@ CREATE TABLE IF NOT EXISTS job_postings (
     UNIQUE (user_id, dedup_key)
 );
 CREATE INDEX IF NOT EXISTS job_postings_recent ON job_postings (user_id, received_at);
+CREATE TABLE IF NOT EXISTS job_sightings (
+    user_id TEXT NOT NULL,
+    job_id INTEGER NOT NULL REFERENCES job_postings(id) ON DELETE CASCADE,
+    source_type TEXT,
+    source_name TEXT,
+    account TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    link TEXT,
+    seen_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, job_id, message_id)
+);
 CREATE TABLE IF NOT EXISTS user_state (
     user_id TEXT NOT NULL,
     key TEXT NOT NULL,
@@ -193,13 +204,84 @@ class SQLCipherRepository(Repository):
         ("listing_details", "TEXT"), ("jd_status", "TEXT"), ("jd_reason", "TEXT"), ("jd_source", "TEXT"),
         ("jd_text", "TEXT"), ("jd_fetched_at", "TEXT"), ("score", "REAL"), ("score_level", "TEXT"),
         ("score_json", "TEXT"), ("score_hash", "TEXT"), ("scored_at", "TEXT"),
+        ("source_type", "TEXT"), ("source_name", "TEXT"),
     )
 
     def _migrate_jobs(self) -> None:
         existing = {r[1] for r in self._db.execute("PRAGMA table_info(job_postings)")}
+        needs_v7 = "source_type" not in existing
+        if needs_v7 and self._db.execute("SELECT count(*) FROM job_postings").fetchone()[0]:
+            self._backup("before-v7")
         for name, sql_type in self._JOB_COLUMNS_V6:
             if name not in existing:
                 self._db.execute(f"ALTER TABLE job_postings ADD COLUMN {name} {sql_type}")
+        if needs_v7:
+            self._rekey_jobs_v7()
+
+    def _backup(self, tag: str) -> None:
+        """Copy the (encrypted) database file before a migration that merges rows."""
+        import shutil
+
+        target = self._path.with_name(f"{self._path.name}.{tag}.bak")
+        if not target.exists():
+            shutil.copy2(self._path, target)
+            os.chmod(target, 0o600)
+
+    def _rekey_jobs_v7(self) -> None:
+        """Tidy titles/companies, record sources and sightings, re-key and merge duplicates."""
+        from mailwarden.core.job_alerts import dedup_key
+        from mailwarden.core.models import JobPost
+        from mailwarden.core.sources import classify_source, display_company, split_title_location
+
+        rows = self._db.execute(
+            "SELECT j.id, j.user_id, j.title, j.company, j.location, j.link, j.sender, j.account, j.message_id, "
+            "j.received_at, j.jd_status, j.score, m.sender_address FROM job_postings j LEFT JOIN messages m "
+            "ON m.user_id = j.user_id AND m.account = j.account AND m.message_id = j.message_id "
+            "ORDER BY j.received_at, j.id").fetchall()
+        keep: dict[tuple[str, str], tuple] = {}
+        self._db.execute("BEGIN")
+        try:
+            for (jid, uid, title, company, location, link, sender, account, mid, received, jd_status, score,
+                 address) in rows:
+                title2, location2 = split_title_location(title, location)
+                company2 = display_company(company) if company else None
+                stype, sname = classify_source(address, sender)
+                key = dedup_key(JobPost(title=title2[:200] if len(title2) >= 2 else title, company=company2,
+                                        location=location2, link=link), sender)
+                self._db.execute(
+                    "UPDATE job_postings SET title = ?, company = ?, location = ?, source_type = ?, source_name = ?, "
+                    "dedup_key = ? WHERE id = ?",
+                    (title2 if len(title2) >= 2 else title, company2, location2, stype, sname, f"tmp:{jid}", jid))
+                self._db.execute(
+                    "INSERT OR IGNORE INTO job_sightings (user_id, job_id, source_type, source_name, account, "
+                    "message_id, link, seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (uid, jid, stype, sname, account, mid, link, received))
+                current = keep.get((uid, key))
+                if current is None:
+                    keep[(uid, key)] = (jid, jd_status, score)
+                    continue
+                # Duplicate: keep the row with a JD, else a score, else the older one; move sightings.
+                cur_id, cur_jd, cur_score = current
+                winner, loser = (jid, cur_id) if (jd_status == "ok", score is not None) > (cur_jd == "ok",
+                                                                                           cur_score is not None) \
+                    else (cur_id, jid)
+                self._db.execute("UPDATE OR IGNORE job_sightings SET job_id = ? WHERE job_id = ?", (winner, loser))
+                self._db.execute("DELETE FROM job_postings WHERE id = ?", (loser,))
+                keep[(uid, key)] = (winner, *((jd_status, score) if winner == jid else (cur_jd, cur_score)))
+            # A copy with no city joins the same company+title that has one (the earliest).
+            for (uid, key) in [k for k in keep if k[1].startswith("c:") and k[1].endswith("|l:")]:
+                siblings = sorted((k for k in keep if k[0] == uid and k[1] != key and k[1].startswith(key)),
+                                  key=lambda k: keep[k][0])
+                if siblings:
+                    winner, loser = keep[siblings[0]][0], keep.pop((uid, key))[0]
+                    self._db.execute("UPDATE OR IGNORE job_sightings SET job_id = ? WHERE job_id = ?", (winner, loser))
+                    self._db.execute("DELETE FROM job_postings WHERE id = ?", (loser,))
+            for (uid, key), (jid, _, _) in keep.items():
+                self._db.execute("UPDATE job_postings SET dedup_key = ? WHERE id = ?", (key, jid))
+            self._db.execute("COMMIT")
+        except Exception:
+            self._db.execute("ROLLBACK")
+            raise
 
     def _pin_currently_urgent(self) -> None:
         """v5 migration: pin everything that is urgent right now, so nothing drops out later."""
@@ -373,38 +455,67 @@ class SQLCipherRepository(Repository):
     def delete_message(self, user_id: str, account: str, message_id: str) -> None:
         self._db.execute("DELETE FROM messages WHERE user_id = ? AND account = ? AND message_id = ?",
                          (user_id, account, message_id))
+        self._db.execute("DELETE FROM job_sightings WHERE user_id = ? AND account = ? AND message_id = ?",
+                         (user_id, account, message_id))
         self._db.execute("DELETE FROM job_postings WHERE user_id = ? AND account = ? AND message_id = ?",
                          (user_id, account, message_id))
 
     # -- job alerts ---------------------------------------------------------
 
+    def _find_job_key(self, user_id: str, key: str) -> tuple[int, str] | None:
+        """Exact key, else the same company+title with an unknown city (either side)."""
+        from mailwarden.core.job_alerts import key_without_location
+
+        row = self._db.execute("SELECT id, dedup_key FROM job_postings WHERE user_id = ? AND dedup_key = ?",
+                               (user_id, key)).fetchone()
+        if row:
+            return row[0], row[1]
+        base = key_without_location(key)
+        if base is None:
+            return None
+        if key == base:  # this sighting has no city: attach to any city of the same job
+            row = self._db.execute(
+                "SELECT id, dedup_key FROM job_postings WHERE user_id = ? AND substr(dedup_key, 1, ?) = ? "
+                "ORDER BY received_at LIMIT 1", (user_id, len(base), base)).fetchone()
+        else:  # this sighting has a city: fill it into a city-less row of the same job
+            row = self._db.execute("SELECT id, dedup_key FROM job_postings WHERE user_id = ? AND dedup_key = ?",
+                                   (user_id, base)).fetchone()
+        return (row[0], row[1]) if row else None
+
     def save_jobs(self, user_id: str, *, account: str, message_id: str, sender: str,
-                  received_at: dt.datetime, posts: list[JobPost], keys: list[str]) -> int:
+                  received_at: dt.datetime, posts: list[JobPost], keys: list[str],
+                  source_type: str | None = None, source_name: str | None = None) -> int:
         new = 0
         for post, key in zip(posts, keys, strict=True):
-            exists = self._db.execute(
-                "SELECT 1 FROM job_postings WHERE user_id = ? AND dedup_key = ?", (user_id, key)
-            ).fetchone()
-            if exists:
-                # Same job seen via another sender: keep the first sighting, fill gaps only.
+            found = self._find_job_key(user_id, key)
+            if found:
+                job_id, old_key = found
+                # Same job seen via another alert: keep the first sighting, fill gaps only.
                 self._db.execute(
                     "UPDATE job_postings SET link = COALESCE(link, ?), location = COALESCE(location, ?), "
-                    "listing_details = COALESCE(listing_details, ?) WHERE user_id = ? AND dedup_key = ?",
-                    (post.link, post.location, post.details, user_id, key),
+                    "listing_details = COALESCE(listing_details, ?), dedup_key = ? WHERE id = ?",
+                    (post.link, post.location, post.details, key if old_key.endswith("|l:") else old_key, job_id),
                 )
-                continue
+            else:
+                cur = self._db.execute(
+                    "INSERT INTO job_postings (user_id, dedup_key, title, company, location, link, sender, account, "
+                    "message_id, received_at, listing_details, source_type, source_name) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (user_id, key, post.title, post.company, post.location, post.link, sender[:200], account,
+                     message_id, _iso(received_at), post.details, source_type, source_name),
+                )
+                job_id = cur.lastrowid
+                new += 1
             self._db.execute(
-                "INSERT INTO job_postings (user_id, dedup_key, title, company, location, link, sender, account, "
-                "message_id, received_at, listing_details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (user_id, key, post.title, post.company, post.location, post.link, sender[:200], account,
-                 message_id, _iso(received_at), post.details),
+                "INSERT OR IGNORE INTO job_sightings (user_id, job_id, source_type, source_name, account, message_id, "
+                "link, seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (user_id, job_id, source_type, source_name, account, message_id, post.link, _iso(received_at)),
             )
-            new += 1
         return new
 
     _JOB_SELECT = ("SELECT id, title, company, location, link, sender, account, message_id, received_at, dismissed_at, "
                    "listing_details, jd_status, jd_reason, jd_source, jd_text, jd_fetched_at, score, score_level, score_json, "
-                   "score_hash FROM job_postings")
+                   "score_hash, source_type, source_name FROM job_postings")
 
     def _row_to_job(self, user_id: str, r: tuple) -> StoredJob:
         detail = json.loads(r[18]) if r[18] else {}
@@ -416,7 +527,15 @@ class SQLCipherRepository(Repository):
             matched_skills=tuple(detail.get("matched_skills", ())), missing_skills=tuple(detail.get("missing_skills", ())),
             evidence=tuple((e["project"], tuple(e.get("skills", ()))) for e in detail.get("evidence", ())),
             best_project=detail.get("best_project"), why=detail.get("why"), score_hash=r[19],
+            source_type=r[20], source_name=r[21],
+            also_on=tuple(n for n in self._sightings(user_id, r[0]) if n and n != r[21]),
         )
+
+    def _sightings(self, user_id: str, job_id: int) -> list[str]:
+        rows = self._db.execute(
+            "SELECT source_name, min(seen_at) FROM job_sightings WHERE user_id = ? AND job_id = ? "
+            "GROUP BY source_name ORDER BY min(seen_at), min(rowid)", (user_id, job_id)).fetchall()
+        return [r[0] for r in rows]
 
     def list_jobs(self, user_id: str, *, include_dismissed: bool = False, since: dt.datetime | None = None,
                   limit: int = 500) -> list[StoredJob]:
@@ -597,6 +716,7 @@ class SQLCipherRepository(Repository):
             self._db.execute("DELETE FROM sync_state WHERE user_id = ? AND account = ?", (user_id, account))
             # Digests summarise all accounts; drop them rather than keep stale content.
             self._db.execute("DELETE FROM digests WHERE user_id = ?", (user_id,))
+            self._db.execute("DELETE FROM job_sightings WHERE user_id = ? AND account = ?", (user_id, account))
             self._db.execute("DELETE FROM job_postings WHERE user_id = ? AND account = ?", (user_id, account))
             self._db.execute(
                 "DELETE FROM application_events WHERE user_id = ? AND account = ?", (user_id, account)
