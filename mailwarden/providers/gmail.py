@@ -19,7 +19,7 @@ from typing import Any
 from mailwarden.core.models import Account, FetchedMessage, ProviderKind
 from mailwarden.providers.base import MailProvider, ProviderError, SyncResult
 from mailwarden.providers.google_oauth import GoogleCredentials
-from mailwarden.providers.html_text import HtmlParseError, html_to_text, looks_like_html
+from mailwarden.providers.html_text import HtmlParseError, html_links, html_to_text, looks_like_html
 from mailwarden.security.net import AllowlistedSession
 
 log = logging.getLogger(__name__)
@@ -96,6 +96,21 @@ def extract_body(payload: dict[str, Any]) -> tuple[str, bool]:
         return "", False
 
 
+def extract_links(payload: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    html = []
+    for part in _walk(payload):
+        body = part.get("body") or {}
+        if part.get("filename") or body.get("attachmentId") or not body.get("data"):
+            continue
+        if (part.get("mimeType") or "").lower() == "text/html":
+            html.append(_decode(body["data"], _charset(part)))
+        elif (part.get("mimeType") or "").lower() == "text/plain":
+            text = _decode(body["data"], _charset(part))
+            if looks_like_html(text):
+                html.append(text)
+    return tuple(html_links("\n".join(html))) if html else ()
+
+
 def parse_message(user_id: str, account: str, data: dict[str, Any]) -> FetchedMessage:
     payload = data.get("payload") or {}
     headers: dict[str, str] = {}
@@ -106,6 +121,10 @@ def parse_message(user_id: str, account: str, data: dict[str, Any]) -> FetchedMe
         body, complete = extract_body(payload)
     except (ValueError, TypeError):  # bad base64 etc.
         body, complete = "", False
+    try:
+        links = extract_links(payload)
+    except (ValueError, TypeError):
+        links = ()
     precedence = headers.get("precedence", "").strip().lower()
     is_bulk = bool(headers.get("list-unsubscribe")) or precedence in ("bulk", "list", "junk")
     if len(body.strip()) < 20:
@@ -124,6 +143,7 @@ def parse_message(user_id: str, account: str, data: dict[str, Any]) -> FetchedMe
         label_ids=tuple(data.get("labelIds") or ()),
         content_complete=complete,
         is_bulk=is_bulk,
+        links=links,
     )
 
 

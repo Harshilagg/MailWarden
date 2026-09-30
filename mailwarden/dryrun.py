@@ -37,6 +37,8 @@ class DryRunReport:
     unclassified: int = 0
     would_notify: int = 0
     near_empty: int = 0
+    waived: int = 0
+    jobs_found: int = 0
     reasons: Counter[str] = field(default_factory=Counter)
     rules_used: Counter[str] = field(default_factory=Counter)
     sensitive_by_sender: Counter[str] = field(default_factory=Counter)
@@ -102,6 +104,9 @@ def run_dry_run(
             domain = _safe_label(msg.sender_domain)
             when = msg.received_at.astimezone().strftime("%Y-%m-%d %H:%M")
             tier_text = f"{triage.tier}" + (f" (rules: {triage.rule_tier}, override: {triage.override})" if triage.override else "")
+            if triage.gate.waived:
+                report.waived += 1
+                tier_text += f"   soft rules waived (recruiting markers): {', '.join(triage.gate.waived)}"
             header = f"[{n}] {when}  {name}  <…@{domain}>"
 
             if triage.gate.sensitive:
@@ -128,6 +133,13 @@ def run_dry_run(
                 say(header, f"    tier: {tier_text}   gate: SAFE",
                     f"    classified by rule ({triage.rule_name}): {triage.rule_classification.category}; no LLM call",
                     "    notification: none (digest only)")
+                if triage.rule_classification.category == "job_alert":
+                    try:
+                        posts = pipeline.extract_jobs_safe(triage, msg) if llm_ok or not pipeline.has_llm else []
+                    except BackendUnavailable:
+                        llm_ok, posts = False, []
+                    report.jobs_found += len(posts)
+                    say(f"    jobs found: {len(posts)}" + (f" (e.g. {posts[0].title} · {posts[0].company or '?'})" if posts else ""))
             else:
                 report.would_classify += 1
                 if triage.tier is Tier.PRIORITY:
@@ -172,6 +184,10 @@ def _print_summary(r: DryRunReport, out: TextIO) -> None:
     p(f"ignored:               {r.ignored}")
     p(f"classified by rule:    {r.rule_classified}" + (f"  ({', '.join(f'{k} ×{v}' for k, v in r.rules_used.most_common())})" if r.rules_used else ""))
     p(f"would go to the LLM:   {r.would_classify}  (priority: {r.priority_safe})")
+    if r.waived:
+        p(f"soft holds waived:     {r.waived}  (recruiting markers, no HARD rule)")
+    if r.jobs_found:
+        p(f"jobs in job alerts:    {r.jobs_found}")
     if r.classified or r.unclassified:
         p(f"LLM classified:        {r.classified}  unclassified: {r.unclassified}  would notify: {r.would_notify}")
     if r.fetch_errors:

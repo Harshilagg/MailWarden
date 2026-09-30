@@ -65,9 +65,16 @@ class RateLimitedBackend(LLMBackend):
     def check(self) -> None:
         self.inner.check()
 
-    def classify(self, redacted_text: str) -> Classification:
+    def _spend(self) -> None:
         if self.calls >= self._per_run:
             raise CallBudgetExhausted(f"max_llm_calls_per_run ({self._per_run}) reached; the rest stays pending")
         self._bucket.take()
         self.calls += 1
+
+    def classify(self, redacted_text: str) -> Classification:
+        self._spend()
         return self.inner.classify(redacted_text)
+
+    def extract_jobs(self, redacted_text: str) -> str:
+        self._spend()
+        return self.inner.extract_jobs(redacted_text)

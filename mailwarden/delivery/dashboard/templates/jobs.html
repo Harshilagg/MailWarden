@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Job alerts · mailwarden{% endblock %}
+{% block content %}
+<h1>Job alerts <span class="count">{{ total }}</span></h1>
+<p class="lead">Jobs from your job-alert emails, newest first, with duplicates across sites merged.
+Highlighted jobs match your filters{% if keywords %} ({{ keywords|join(", ") }}{% if locations %} · {{ locations|join(", ") }}{% endif %}){% endif %}.</p>
+<p class="filters">
+  <a href="/jobs"{% if not only_matches %} aria-current="page"{% endif %}>All ({{ total }})</a>
+  <a href="/jobs?match=1"{% if only_matches %} aria-current="page"{% endif %}>Matches only ({{ matched }})</a>
+</p>
+{% if not rows %}<p class="empty">{% if only_matches %}No jobs match your filters yet.{% else %}No jobs yet. They appear as job-alert emails are processed.{% endif %}</p>{% endif %}
+<ul class="jobs">
+{% for j, is_match, link in rows %}
+  <li class="job{% if is_match %} match{% endif %}">
+    <div class="job-main">
+      <span class="job-title">{{ j.title }}</span>
+      <span class="meta">{{ j.company or "Company not listed" }}{% if j.location %} · {{ j.location }}{% endif %}</span>
+      <span class="meta">via {{ j.sender }} · {{ j.received_at|ago }}</span>
+    </div>
+    <div class="actions">
+      {% if link %}<a class="button" href="{{ link }}" target="_blank" rel="noopener noreferrer">Open</a>{% endif %}
+      <form method="post" action="/jobs/{{ j.id }}/dismiss" class="inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        {% if only_matches %}<input type="hidden" name="match" value="1">{% endif %}
+        <button class="secondary">Dismiss</button>
+      </form>
+    </div>
+  </li>
+{% endfor %}
+</ul>
+{% endblock %}

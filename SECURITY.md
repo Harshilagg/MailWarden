@@ -76,6 +76,25 @@ Verhoeff checksum and have "Aadhaar" within about 50 characters. A PAN
 (`[A-Z]{5}[0-9]{4}[A-Z]`) must have the word PAN nearby. The keyword rules
 (Aadhaar, KYC, OTP, ...) are unchanged.
 
+**Hard and soft rules.** HARD rules always hold, whatever else is true:
+OTP / verification code / passcode / code-near-number, transaction,
+debited/credited, account number, card ending, Aadhaar number (Verhoeff-valid,
+with the word nearby), PAN (strict format with the word nearby), IFSC codes,
+seed phrases, Hindi OTP/banking terms, every error or uncertainty, security
+alerts from account-security senders, and the government or account-security
+sender tier. SOFT rules are mentions rather than secrets: "password", "do not
+share/forward" footers, statements, UPI/IFSC words, KYC/PAN/Aadhaar words,
+banking terms, tax/ID words, a bank-brand display name, the bank/payments
+sender tier, and security-alert wording from any sender that isn't an
+account-security sender. A hold made **only** of SOFT rules is waived when the
+mail carries strong recruiting markers: an ATS relay (SmartRecruiters,
+Greenhouse, Lever, Ashby, Workday, jobs2web/SuccessFactors, iCIMS, as sender
+domain or footer) or a recruiting phrase ("application received", "thank you
+for applying", "hiring team", ...). For a bank/payments sender the marker must
+be an ATS relay or a phrase in the **subject**, because bank marketing footers
+often mention careers. Waived mail is then redacted and classified like any
+other SAFE mail.
+
 **Recruiting overrides (sender rules only).** A recruiting subdomain
 (`careers.`, `recruitment.`, `talent.`, `jobs.` ...) of a SENSITIVE company
 domain is treated as PRIORITY. A recruiting display name on such a domain only
@@ -102,6 +121,27 @@ stored or displayed. The only code path that calls an LLM
 `tests/test_zero_llm_sensitive.py` asserts zero LLM calls and zero network
 calls for a set of realistic Indian bank, UPI, OTP, login-alert, KYC and tax
 emails. It runs on every test run, and a skip is reported as a failure.
+
+## Job alerts
+
+Job-alert emails (SAFE only) are split into individual jobs locally, by
+parsing "View job" blocks and job links. If that finds nothing, the LLM gets
+the redacted email plus a numbered list of link texts and **domains only**
+(`[L3] Backend Intern (internshala.com)`). It answers with link numbers, which
+are mapped back to the real URLs locally, so real URLs (which often carry
+tracking tokens) never leave the machine. Jobs are stored in the encrypted
+database. The dashboard only renders `http(s)` links. At most one "N new jobs
+match your filters" notification is sent per day.
+
+## Robustness against crafted mail
+
+The pattern-matching code is written to run in linear time: patterns are
+anchored at token boundaries, redaction only processes the slice of text that
+could be sent, and the HTML converter uses a counter instead of rescanning.
+HTML nested more than 2,000 levels deep is treated as unparseable, which
+holds the message (fail closed). `tests/test_redos.py` checks every
+text-processing function against 100,000-character hostile inputs on every
+test run.
 
 ## Redaction
 

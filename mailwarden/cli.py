@@ -16,6 +16,7 @@ from mailwarden.app import App, build_app
 from mailwarden.config import RULES_FILE, ConfigError, home_dir, init_home
 from mailwarden.core.classify.base import BackendError
 from mailwarden.core.models import SLUG_PATTERN, Account, ProviderKind, Tier
+from mailwarden.core.pipeline import Pipeline
 from mailwarden.core.runner import Runner
 from mailwarden.delivery.dashboard.server import UnsafeBind
 from mailwarden.storage.sqlite_store import StoreError
@@ -206,7 +207,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         f"processed {stats.new} new: {stats.classified} classified by LLM, {stats.rule_classified} by rule, "
         f"{stats.unclassified} unclassified, {stats.sensitive} sensitive (not processed; {stats.held_jobs} of "
         f"them job mail surfaced), {stats.ignored} ignored; {stats.job} job emails; "
-        f"{len(stats.alerts)} would notify; {stats.pending} pending for next run"
+        f"{len(stats.alerts)} would notify; {stats.jobs_new} new jobs from job alerts; "
+        f"{stats.pending} pending for next run"
     )
     if stats.accounts_failed:
         print(f"accounts failed: {', '.join(stats.accounts_failed)}", file=sys.stderr)
@@ -247,14 +249,22 @@ def cmd_open(args: argparse.Namespace) -> int:
 
 
 def cmd_digest(args: argparse.Namespace) -> int:
-    from mailwarden.core.digest_job import run_digest
+    from mailwarden.core.digest_job import maybe_notify_new_jobs, run_digest
 
     app = build_app()
     repo = app.repository()
+    now = dt.datetime.now(dt.UTC)
     try:
-        d = run_digest(repo, app.user_id, now=dt.datetime.now(dt.UTC), sink=app.digest_sink())
+        d = run_digest(repo, app.user_id, now=now, sink=app.digest_sink())
+        ja = app.settings.job_alerts
+        matched = 0
+        if ja.daily_notification:
+            matched = maybe_notify_new_jobs(repo, app.user_id, now=now, keywords=ja.target_keywords,
+                                            locations=ja.target_locations, notifier=app.notifier())
     finally:
         repo.close()
+    if matched:
+        print(f"notified: {matched} new job(s) match your filters")
     sections = ", ".join(f"{k} {len(v)}" for k, v in d.sections.items()) or "no new mail"
     print(f"digest: {d.urgent} urgent, {sections}, {sum(d.sensitive_by_sender.values())} sensitive, {d.ignored} ignored")
     if app.settings.digest.markdown_dir:
@@ -277,6 +287,41 @@ def cmd_schedule(args: argparse.Namespace) -> int:
         print(f"wrote {out / f.name}")
     print("\nReview the files, then install them with:\n")
     print(instructions(out))
+    return 0
+
+
+def cmd_regate(args: argparse.Namespace) -> int:
+    from mailwarden.regate import print_regate, run_regate
+
+    if not 1 <= args.days <= 90:
+        raise UsageError("--days must be between 1 and 90")
+    app = build_app()
+    accounts = app.accounts.list(app.user_id)
+    repo = app.repository()
+    try:
+        rules = app.rules().with_priority_domains(repo.application_domains(app.user_id))
+        pipeline = Pipeline(rules, max_body_chars=app.settings.llm.max_body_chars)
+        report = run_regate(repo, app.user_id, accounts, app.provider_for, pipeline, days=args.days,
+                            now=dt.datetime.now(dt.UTC))
+        print_regate(report, sys.stdout, applied=args.apply)
+        if args.apply and report.to_reprocess:
+            llm = app.llm_backend()
+            llm.check()
+            log.info("LLM backend: %s", app.backend_description())
+            runner = Runner(user_id=app.user_id, repo=repo, rules=app.rules(), llm=llm, provider_for=app.provider_for,
+                            max_body_chars=app.settings.llm.max_body_chars,
+                            max_per_run=app.settings.gmail.max_messages_per_run, notifier=None)
+            by_name = {a.name: a for a in accounts}
+            total = 0
+            for name, ids in report.to_reprocess.items():
+                stats = runner.reprocess(by_name[name], ids)
+                total += stats.new
+                print(f"reprocessed {stats.new} in {name}: {stats.classified} by LLM, {stats.rule_classified} by rule, "
+                      f"{stats.sensitive} held ({stats.held_jobs} surfaced as job mail), "
+                      f"{stats.jobs_new} new jobs extracted, {stats.pending} pending")
+            print("(re-processing never sends notifications)")
+    finally:
+        repo.close()
     return 0
 
 
@@ -355,6 +400,10 @@ def build_parser() -> argparse.ArgumentParser:
     op = sub.add_parser("open", help="open a one-time sign-in link to the running dashboard")
     op.add_argument("--print-only", action="store_true", help="print the link instead of opening it")
     op.set_defaults(func=cmd_open)
+    rg = sub.add_parser("regate", help="re-check stored mail with the current gate/rules; per-sender breakdown")
+    rg.add_argument("--days", type=int, default=7)
+    rg.add_argument("--apply", action="store_true", help="reprocess emails whose outcome changed (uses the LLM)")
+    rg.set_defaults(func=cmd_regate)
     sc = sub.add_parser("schedule", help="generate launchd / systemd / Task Scheduler files")
     sc.add_argument("--platform", choices=["macos", "linux", "windows"])
     sc.set_defaults(func=cmd_schedule)

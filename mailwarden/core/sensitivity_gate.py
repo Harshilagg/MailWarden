@@ -24,10 +24,35 @@ log = logging.getLogger(__name__)
 class GateResult:
     decision: GateDecision
     reasons: tuple[str, ...] = ()
+    #: SOFT reasons that were waived because of strong recruiting markers (dry-run/regate display).
+    waived: tuple[str, ...] = ()
 
     @property
     def sensitive(self) -> bool:
         return self.decision is GateDecision.SENSITIVE
+
+
+# HARD rules always hold, whatever else is true. Everything not listed as SOFT is HARD
+# (fail closed), including every error/uncertainty reason.
+SOFT_RULES = frozenset({
+    "password", "do_not_share", "statement", "upi", "ifsc", "kyc", "pan_phrase", "aadhaar",
+    "banking", "tax", "government_id", "sender_name",
+})
+# Security-alert rules are HARD for account-security senders and SOFT for everyone else.
+SECURITY_ALERT_RULES = frozenset({"login_alert", "new_device", "two_factor"})
+
+
+def is_hard(reason: str, *, security_sender: bool, hard_sender_tier: bool) -> bool:
+    if reason in SECURITY_ALERT_RULES:
+        return security_sender
+    if reason == "sender_tier":
+        return hard_sender_tier  # government / account-security tier; financial tier is SOFT
+    return reason not in SOFT_RULES
+
+
+def hard_reasons(result: GateResult, *, security_sender: bool, hard_sender_tier: bool) -> tuple[str, ...]:
+    return tuple(r for r in result.reasons
+                 if is_hard(r, security_sender=security_sender, hard_sender_tier=hard_sender_tier))
 
 
 def _ci(pattern: str) -> re.Pattern[str]:
@@ -71,13 +96,13 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     ),
     "statement": _ci(r"\b(?:e-?)?statements?\b"),
     "upi": _ci(
-        r"\bupi\b|\bvpa\b|\bbhim\b|\b[\w.-]+@(?:ok(?:axis|hdfcbank|icici|sbi)|ybl|ibl|axl|paytm|apl|"
+        r"\bupi\b|\bvpa\b|\bbhim\b|(?<![\w.-])[\w.-]+@(?:ok(?:axis|hdfcbank|icici|sbi)|ybl|ibl|axl|paytm|apl|"
         r"upi|axisbank|icici|sbi|hdfcbank|kotak|yapl|pt(?:yes|axis|hdfc|sbi))\b"
     ),
     "ifsc": _ci(r"\bifsc\b"),
     "account_number": _ci(r"\b(?:a/c|acct|account)\s*(?:no\b\.?|number|num\b|#)|\ba/c\b"),
     "card_ending": _ci(
-        r"\bcard\s+(?:ending|no\b\.?|number)|\bending\s+(?:in|with)\s+[x*•\d]|[x*•]{2,}[\s-]?\d{4}\b"
+        r"\bcard\s+(?:ending|no\b\.?|number)|\bending\s+(?:in|with)\s+[x*•\d]|(?<![x*•])[x*•]{2,}[\s-]?\d{4}\b"
     ),
     "kyc": _ci(r"\b(?:e-?|c-?|re-?|v-?)?kyc\b"),
     "pan_phrase": _ci(r"\bpan\s+(?:card|number|no\b|details|verification)|\bpermanent\s+account\s+number\b"),

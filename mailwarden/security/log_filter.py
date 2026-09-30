@@ -27,10 +27,10 @@ _RULES: list[tuple[re.Pattern[str], str]] = [
         re.compile(rf"(?i)\b({_SECRET_WORDS})(\"?\s*[:=]\s*\"?|\s+is\s+)([^\s,;\"'&]+)"),
         r"\1\2[REDACTED]",
     ),
-    (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "[EMAIL]"),
+    (re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "[EMAIL]"),
 ]
 # Long mixed alphanumeric strings look like keys; checked by function below.
-_LONG_TOKEN = re.compile(r"[A-Za-z0-9_\-+=]{24,}")
+_LONG_TOKEN = re.compile(r"(?<![A-Za-z0-9_\-+=])[A-Za-z0-9_\-+=]{24,}")
 _DIGITS = re.compile(r"\d{4,}")
 
 

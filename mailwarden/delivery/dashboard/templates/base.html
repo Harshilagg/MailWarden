@@ -11,7 +11,7 @@
 <header class="top">
   <span class="brand">mailwarden</span>
   <nav>
-    {% for href, label in [("/", "Urgent"), ("/applications", "Applications"), ("/digest", "Digest"), ("/sensitive", "Sensitive"), ("/settings", "Settings")] %}
+    {% for href, label in [("/", "Urgent"), ("/applications", "Applications"), ("/jobs", "Job alerts"), ("/digest", "Digest"), ("/sensitive", "Sensitive"), ("/settings", "Settings")] %}
     <a href="{{ href }}"{% if path == href %} aria-current="page"{% endif %}>{{ label }}</a>
     {% endfor %}
   </nav>

@@ -58,3 +58,11 @@ backend = "auto"
 times = ["08:00", "18:00"]
 # Optional Markdown copy of each digest, e.g. "~/Documents/mailwarden-digests". Empty = off.
 markdown_dir = ""
+
+[job_alerts]
+# Jobs extracted from job-alert emails are shown on the dashboard's "Job alerts" page.
+# Matching jobs are highlighted: title contains a keyword AND location matches (or is unknown).
+target_keywords = ["software engineer", "backend", "full stack", "sde"]
+target_locations = ["Bengaluru", "Remote"]
+# At most one "N new jobs match your filters" notification per day, never one per alert email.
+daily_notification = true

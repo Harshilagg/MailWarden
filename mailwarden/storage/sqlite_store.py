@@ -17,6 +17,8 @@ import sqlcipher3
 
 from mailwarden.core.applications import company_key, role_key
 from mailwarden.core.models import (
+    JobPost,
+    StoredJob,
     Application,
     Classification,
     EmailMeta,
@@ -29,7 +31,7 @@ from mailwarden.security.fs import check_private, ensure_private_dir
 from mailwarden.security.secrets import SecretKeys, SecretStore
 from mailwarden.storage.base import ApplicationEvent, Repository
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Columns added after v1: (name, SQL type). Applied with ALTER TABLE on open.
 _MESSAGE_COLUMNS_V2 = (
@@ -86,6 +88,28 @@ CREATE TABLE IF NOT EXISTS applications (
     source_message_ids TEXT NOT NULL,
     domains TEXT NOT NULL DEFAULT '[]',
     UNIQUE (user_id, company_key, role_key)
+);
+CREATE TABLE IF NOT EXISTS job_postings (
+    id INTEGER PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    dedup_key TEXT NOT NULL,
+    title TEXT NOT NULL,
+    company TEXT,
+    location TEXT,
+    link TEXT,
+    sender TEXT NOT NULL,
+    account TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    dismissed_at TEXT,
+    UNIQUE (user_id, dedup_key)
+);
+CREATE INDEX IF NOT EXISTS job_postings_recent ON job_postings (user_id, received_at);
+CREATE TABLE IF NOT EXISTS user_state (
+    user_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (user_id, key)
 );
 CREATE TABLE IF NOT EXISTS digests (
     id INTEGER PRIMARY KEY,
@@ -309,6 +333,73 @@ class SQLCipherRepository(Repository):
         )
         return cur.rowcount > 0
 
+    def delete_message(self, user_id: str, account: str, message_id: str) -> None:
+        self._db.execute("DELETE FROM messages WHERE user_id = ? AND account = ? AND message_id = ?",
+                         (user_id, account, message_id))
+        self._db.execute("DELETE FROM job_postings WHERE user_id = ? AND account = ? AND message_id = ?",
+                         (user_id, account, message_id))
+
+    # -- job alerts ---------------------------------------------------------
+
+    def save_jobs(self, user_id: str, *, account: str, message_id: str, sender: str,
+                  received_at: dt.datetime, posts: list[JobPost], keys: list[str]) -> int:
+        new = 0
+        for post, key in zip(posts, keys, strict=True):
+            exists = self._db.execute(
+                "SELECT 1 FROM job_postings WHERE user_id = ? AND dedup_key = ?", (user_id, key)
+            ).fetchone()
+            if exists:
+                # Same job seen via another sender: keep the first sighting, fill gaps only.
+                self._db.execute(
+                    "UPDATE job_postings SET link = COALESCE(link, ?), location = COALESCE(location, ?) "
+                    "WHERE user_id = ? AND dedup_key = ?",
+                    (post.link, post.location, user_id, key),
+                )
+                continue
+            self._db.execute(
+                "INSERT INTO job_postings (user_id, dedup_key, title, company, location, link, sender, account, "
+                "message_id, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (user_id, key, post.title, post.company, post.location, post.link, sender[:200], account,
+                 message_id, _iso(received_at)),
+            )
+            new += 1
+        return new
+
+    def list_jobs(self, user_id: str, *, include_dismissed: bool = False, since: dt.datetime | None = None,
+                  limit: int = 500) -> list[StoredJob]:
+        sql = ("SELECT id, title, company, location, link, sender, account, message_id, received_at, dismissed_at "
+               "FROM job_postings WHERE user_id = ?")
+        args: list[object] = [user_id]
+        if not include_dismissed:
+            sql += " AND dismissed_at IS NULL"
+        if since is not None:
+            sql += " AND received_at >= ?"
+            args.append(_iso(since))
+        sql += " ORDER BY received_at DESC, id DESC LIMIT ?"
+        args.append(limit)
+        return [
+            StoredJob(id=r[0], user_id=user_id, title=r[1], company=r[2], location=r[3], link=r[4], sender=r[5],
+                      account=r[6], message_id=r[7], received_at=dt.datetime.fromisoformat(r[8]),
+                      dismissed=r[9] is not None)
+            for r in self._db.execute(sql, args).fetchall()
+        ]
+
+    def dismiss_job(self, user_id: str, job_id: int) -> bool:
+        cur = self._db.execute("UPDATE job_postings SET dismissed_at = ? WHERE user_id = ? AND id = ?",
+                               (_now(), user_id, job_id))
+        return cur.rowcount > 0
+
+    def get_state(self, user_id: str, key: str) -> str | None:
+        row = self._db.execute("SELECT value FROM user_state WHERE user_id = ? AND key = ?", (user_id, key)).fetchone()
+        return row[0] if row else None
+
+    def set_state(self, user_id: str, key: str, value: str) -> None:
+        self._db.execute(
+            "INSERT INTO user_state (user_id, key, value) VALUES (?, ?, ?) "
+            "ON CONFLICT (user_id, key) DO UPDATE SET value = excluded.value",
+            (user_id, key, value),
+        )
+
     # -- digests ------------------------------------------------------------
 
     def save_digest(self, user_id: str, generated_at: dt.datetime, period_start: dt.datetime, body_json: str) -> None:
@@ -440,6 +531,7 @@ class SQLCipherRepository(Repository):
             self._db.execute("DELETE FROM sync_state WHERE user_id = ? AND account = ?", (user_id, account))
             # Digests summarise all accounts; drop them rather than keep stale content.
             self._db.execute("DELETE FROM digests WHERE user_id = ?", (user_id,))
+            self._db.execute("DELETE FROM job_postings WHERE user_id = ? AND account = ?", (user_id, account))
             self._db.execute(
                 "DELETE FROM application_events WHERE user_id = ? AND account = ?", (user_id, account)
             )

@@ -39,6 +39,9 @@ class Notifier(ABC):
     @abstractmethod
     def notify(self, alert: JobAlert) -> None: ...
 
+    def notify_text(self, text: str, dashboard_path: str) -> None:
+        """A short content-free notice (e.g. '3 new jobs match your filters')."""
+
 
 class DigestSink(ABC):
     @abstractmethod

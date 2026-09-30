@@ -96,6 +96,14 @@ class NotificationSettings(_Section):
     click_wait_seconds: float = Field(default=0, ge=0, le=600)
 
 
+class JobAlertSettings(_Section):
+    # A job matches when its title contains a keyword AND (its location matches, or is unknown).
+    target_keywords: list[str] = ["software engineer", "backend", "full stack", "sde"]
+    target_locations: list[str] = ["Bengaluru", "Remote"]
+    # At most one "N new jobs match your filters" notification per day (sent with the digest).
+    daily_notification: bool = True
+
+
 class DigestSettings(_Section):
     times: list[str] = ["08:00", "18:00"]
     # Optional folder for a Markdown copy of each digest (created 0700, files 0600). Empty = off.
@@ -123,6 +131,7 @@ class Settings(_Section):
     dashboard: DashboardSettings = DashboardSettings()
     notifications: NotificationSettings = NotificationSettings()
     digest: DigestSettings = DigestSettings()
+    job_alerts: JobAlertSettings = JobAlertSettings()
 
     @model_validator(mode="after")
     def _groq_opt_in(self) -> Settings:

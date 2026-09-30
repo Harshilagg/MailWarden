@@ -14,7 +14,7 @@ import datetime as dt
 import re
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import resources
 from urllib.parse import parse_qs
 
@@ -22,6 +22,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from jinja2 import Environment, PackageLoader, select_autoescape
 
+from mailwarden.core.job_alerts import matches_filters, safe_link
 from mailwarden.core.links import gmail_link
 from mailwarden.core.models import SLUG_PATTERN, Account, Category, GateDecision, Stage
 from mailwarden.core.overview import CATEGORY_TITLES, Digest, build_digest, urgent_items
@@ -62,6 +63,8 @@ class DashboardDeps:
     backend_description: str
     outbound_hosts: list[str]
     digest_times: list[str]
+    job_keywords: list[str] = field(default_factory=list)
+    job_locations: list[str] = field(default_factory=list)
     now: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.UTC)
 
 
@@ -196,6 +199,34 @@ def create_app(deps: DashboardDeps) -> FastAPI:
         return render("digest.html", request, d=d, live=live, sections=sections,
                       generated=dt.datetime.fromisoformat(d.generated_at),
                       sensitive_total=sum(d.sensitive_by_sender.values()))
+
+    @app.get("/jobs")
+    def jobs(request: Request, match: int = 0) -> Response:
+        repo = deps.repo_factory()
+        try:
+            stored = repo.list_jobs(deps.user_id)
+        finally:
+            repo.close()
+        rows = [(j, matches_filters(j.title, j.location, deps.job_keywords, deps.job_locations), safe_link(j.link))
+                for j in stored]
+        matched = sum(1 for r in rows if r[1])
+        if match:
+            rows = [r for r in rows if r[1]]
+        return render("jobs.html", request, rows=rows, only_matches=bool(match), total=len(stored), matched=matched,
+                      keywords=deps.job_keywords, locations=deps.job_locations)
+
+    @app.post("/jobs/{job_id}/dismiss")
+    async def dismiss_job(request: Request, job_id: int) -> Response:
+        try:
+            form = await check_post(request)
+        except PermissionError:
+            return forbidden()
+        repo = deps.repo_factory()
+        try:
+            repo.dismiss_job(deps.user_id, job_id)
+        finally:
+            repo.close()
+        return RedirectResponse("/jobs?match=1" if form.get("match") == "1" else "/jobs", status_code=303)
 
     @app.get("/sensitive")
     def sensitive(request: Request) -> Response:

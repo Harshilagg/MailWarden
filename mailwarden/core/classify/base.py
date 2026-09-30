@@ -38,6 +38,13 @@ class LLMBackend(ABC):
         Raises InvalidOutput or BackendUnavailable.
         """
 
+    def extract_jobs(self, redacted_text: str) -> str:
+        """Return raw JSON listing the jobs in ONE redacted, SAFE job-alert email.
+
+        Raises InvalidOutput or BackendUnavailable. Optional for backends.
+        """
+        raise NotImplementedError
+
     def check(self) -> None:
         """Fail fast if the backend is unusable (missing key, server not running)."""
 

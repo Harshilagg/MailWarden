@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 
 from mailwarden.core.alerts import should_alert
 from mailwarden.core.applications import company_domain, is_known_company, record_job_event
+from mailwarden.core.job_alerts import dedup_key
 from mailwarden.core.classify.base import BackendUnavailable, LLMBackend
 from mailwarden.core.models import Account, Category, EmailMeta, GateDecision, MessageStatus, Tier
 from mailwarden.core.pipeline import Pipeline, Triage
@@ -38,6 +39,9 @@ class RunStats:
     pending: int = 0
     job: int = 0
     near_empty: int = 0
+    jobs_found: int = 0
+    jobs_new: int = 0
+    waived: int = 0
     alerts: list[JobAlert] = field(default_factory=list)
 
 
@@ -64,11 +68,23 @@ class Runner:
         self._notifier = notifier
         self._llm_ok = True
 
-    def run(self, accounts: list[Account]) -> RunStats:
-        stats = RunStats()
+    def _pipeline(self) -> Pipeline:
         # Company domains from tracked applications count as PRIORITY senders.
         rules = self._rules.with_priority_domains(self._repo.application_domains(self._user_id))
-        pipeline = Pipeline(rules, max_body_chars=self._max_body_chars, llm=self._llm)
+        return Pipeline(rules, max_body_chars=self._max_body_chars, llm=self._llm)
+
+    def reprocess(self, account: Account, message_ids: list[str]) -> RunStats:
+        """Forget and re-run specific messages (used by `regate --apply`)."""
+        stats = RunStats()
+        provider, pipeline = self._provider_for(account), self._pipeline()
+        for message_id in message_ids:
+            self._repo.delete_message(self._user_id, account.name, message_id)
+            self._process(account, provider, pipeline, message_id, stats)
+        return stats
+
+    def run(self, accounts: list[Account]) -> RunStats:
+        stats = RunStats()
+        pipeline = self._pipeline()
         for account in accounts:
             try:
                 self._run_account(account, pipeline, stats)
@@ -115,6 +131,8 @@ class Runner:
             if len(msg.body_text.strip()) < 20:
                 stats.near_empty += 1
             triage = pipeline.triage(msg)
+            if triage.gate.waived:
+                stats.waived += 1
             if triage.gate.decision is GateDecision.SENSITIVE:
                 self._save_sensitive(account, msg, triage, stats)
                 return
@@ -148,11 +166,13 @@ class Runner:
             self._repo.save_email_meta(
                 EmailMeta(
                     user_id=uid, account=account.name, message_id=message_id,
-                    sender_address=msg.sender_address, sender_name=msg.sender_name,
+                    sender_address=msg.sender_address, sender_name=triage.sender or msg.sender_name,
                     received_at=msg.received_at, tier=triage.tier, gate=triage.gate.decision,
                     status=status, classification=classification, classified_by=classified_by,
                 )
             )
+            if classification is not None and classification.category is Category.JOB_ALERT:
+                self._save_jobs(account, msg, triage, pipeline, stats)
             if classification is not None and classification.category is Category.JOB:
                 stats.job += 1
                 via_ats = priority_sender and self._rules.tier_for(msg.sender_address) is Tier.PRIORITY
@@ -175,7 +195,7 @@ class Runner:
         self._repo.save_email_meta(
             EmailMeta(
                 user_id=uid, account=account.name, message_id=msg.message_id, sender_address=None,
-                sender_name=msg.sender_name, received_at=msg.received_at, tier=triage.tier,
+                sender_name=triage.sender or msg.sender_name, received_at=msg.received_at, tier=triage.tier,
                 gate=GateDecision.SENSITIVE, held_reason=friendly_reason(triage.gate.reasons),
                 held_job=held is not None, held_company=held.company if held else None,
                 held_stage=held.stage if held else None,
@@ -189,6 +209,24 @@ class Runner:
             message_id=msg.message_id, received_at=msg.received_at, domain=None,
         )
         self._alert(JobAlert(uid, account.name, msg.message_id, held.company, held.stage, None, held=True), stats)
+
+    def _save_jobs(self, account: Account, msg, triage: Triage, pipeline: Pipeline, stats: RunStats) -> None:
+        if not self._llm_ok:
+            pipeline = Pipeline(self._rules, max_body_chars=self._max_body_chars)  # local parsers only
+        try:
+            posts = pipeline.extract_jobs_safe(triage, msg)
+        except BackendUnavailable as e:
+            log.warning("job extraction skipped (%s)", e)
+            self._llm_ok = False
+            return
+        if not posts:
+            return
+        sender = triage.sender or msg.sender_name
+        stats.jobs_found += len(posts)
+        stats.jobs_new += self._repo.save_jobs(
+            self._user_id, account=account.name, message_id=msg.message_id, sender=sender,
+            received_at=msg.received_at, posts=posts, keys=[dedup_key(p, sender) for p in posts],
+        )
 
     def _alert(self, alert: JobAlert, stats: RunStats) -> None:
         stats.alerts.append(alert)

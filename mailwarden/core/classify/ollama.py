@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from mailwarden.core.classify.base import BackendError, BackendUnavailable, InvalidOutput, LLMBackend, parse_output
 from mailwarden.core.classify.prompt import OUTPUT_SCHEMA, build_messages
+from mailwarden.core.job_alerts import JOBS_SCHEMA, JOBS_SYSTEM_PROMPT
 from mailwarden.core.models import Classification
 from mailwarden.security.net import AllowlistedSession, RequestException
 
@@ -28,10 +29,16 @@ class OllamaBackend(LLMBackend):
             raise BackendError(f"Ollama model {self.model!r} not pulled; run `ollama pull {self.model}`")
 
     def classify(self, redacted_text: str) -> Classification:
+        return parse_output(self._chat_json(build_messages(redacted_text), OUTPUT_SCHEMA))
+
+    def extract_jobs(self, redacted_text: str) -> str:
+        return self._chat_json(build_messages(redacted_text, system=JOBS_SYSTEM_PROMPT), JOBS_SCHEMA)
+
+    def _chat_json(self, messages: list[dict[str, str]], schema: dict) -> str:
         payload = {
             "model": self.model,
-            "messages": build_messages(redacted_text),
-            "format": OUTPUT_SCHEMA,
+            "messages": messages,
+            "format": schema,
             "stream": False,
             "options": {"temperature": 0},
         }
@@ -45,4 +52,4 @@ class OllamaBackend(LLMBackend):
             content = resp.json()["message"]["content"]
         except (KeyError, TypeError, ValueError):
             raise InvalidOutput("unexpected Ollama response shape") from None
-        return parse_output(content or "")
+        return content or ""

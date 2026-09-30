@@ -87,8 +87,10 @@ _NOISE = re.compile(
 )
 
 
-def company_from_sender(display_name: str, domain: str) -> str | None:
+def company_from_sender(display_name: str, domain: str, address: str = "") -> str | None:
     name = clean(display_name).strip().strip('"')
+    if address and domain and domain_matches(domain, RELAY_DOMAINS) and not _meaningful_name(display_name):
+        return company_from_local_part(address)
     if m := _VIA.match(name):
         name = m.group(1)
     elif m := _FROM.match(name):
@@ -119,3 +121,101 @@ def stage_from_subject(subject: str) -> Stage | None:
         if pattern.search(text):
             return stage
     return None
+
+
+# --- recruiting markers (used to waive SOFT gate rules) ------------------------------
+
+ATS_DOMAINS = frozenset({
+    "smartrecruiters.com", "greenhouse.io", "greenhouse-mail.io", "lever.co", "ashbyhq.com",
+    "myworkdayjobs.com", "myworkday.com", "jobs2web.com", "successfactors.com", "successfactors.eu",
+    "icims.com",
+})
+# ATS names as they appear in relay footers ("Sent via SmartRecruiters", "Powered by Workday").
+_ATS_FOOTER = re.compile(
+    r"smartrecruiters|greenhouse(?:\.io|-mail)|\bjobs\.lever\.co|\blever\.co\b|ashbyhq|myworkday(?:jobs)?|"
+    r"powered\s+by\s+workday|jobs2web|successfactors|\bicims\b",
+    re.IGNORECASE,
+)
+_RECRUITING_PHRASES = re.compile(
+    r"application\s+for\s+the\s+(?:position|role)|application\s+(?:has\s+been\s+)?received|"
+    r"thanks?\s+(?:you\s+)?for\s+(?:applying|your\s+application)|recruitment\s+team|hiring\s+team|"
+    r"job\s+agent|job\s+alerts?|career\s+opportunit(?:y|ies)",
+    re.IGNORECASE,
+)
+_JOB_ALERT_PHRASES = re.compile(
+    r"job\s+alerts?|job\s+agent|jobs?\s+(?:you\s+may|for\s+you|matching|recommendations?)|"
+    r"recommended\s+jobs|matching\s+jobs|new\s+jobs|new\s+(?:job\s+)?opportunities|"
+    r"\d+\+?\s+(?:new\s+)?(?:jobs|internships|openings)|internships?\s+for\s+you|companies\s+are\s+hiring",
+    re.IGNORECASE,
+)
+
+GOVERNMENT_SUFFIXES = frozenset({"gov.in", "nic.in", "gov", "irs.gov", "uidai.gov.in", "incometax.gov.in",
+                                 "protean-tinpan.com", "tin-nsdl.com", "utiitsl.com", "epfindia.gov.in"})
+
+
+def is_government(domain: str) -> bool:
+    return domain_matches(domain, GOVERNMENT_SUFFIXES)
+
+
+def recruiting_markers(sender_domain: str, subject: str, body: str) -> set[str]:
+    """Names of recruiting markers present. 'ats' and 'subject_phrase' are the strong ones."""
+    markers: set[str] = set()
+    subject, head = clean(subject), clean(body)[:20000]
+    if domain_matches(sender_domain, ATS_DOMAINS):
+        markers.add("ats")
+    if _ATS_FOOTER.search(head):
+        markers.add("ats")
+    if _RECRUITING_PHRASES.search(subject):
+        markers.add("subject_phrase")
+    if _RECRUITING_PHRASES.search(head):
+        markers.add("body_phrase")
+    return markers
+
+
+def strong_recruiting(markers: set[str], *, strict: bool) -> bool:
+    """strict (a bank/payments sender): needs an ATS relay or a subject phrase."""
+    if strict:
+        return bool(markers & {"ats", "subject_phrase"})
+    return bool(markers)
+
+
+def looks_like_job_alert(subject: str, body: str) -> bool:
+    return bool(_JOB_ALERT_PHRASES.search(clean(subject)) or _JOB_ALERT_PHRASES.search(clean(body)[:600]))
+
+
+# --- sender labels (never "Unknown sender") ------------------------------------------
+
+RELAY_DOMAINS = frozenset({"jobs2web.com", "successfactors.com", "successfactors.eu", "myworkday.com",
+                           "myworkdayjobs.com", "smartrecruiters.com", "icims.com"})
+_LOCAL_NOISE = re.compile(
+    r"job\s*alerts?|jobs?|careers?|recruit\w*|talent|no-?reply|donotreply|do-not-reply|hiring|alerts?|"
+    r"notifications?|mailer|info|hr|team|\d+",
+    re.IGNORECASE,
+)
+
+
+def company_from_local_part(address: str) -> str | None:
+    local = address.partition("@")[0]
+    local = _LOCAL_NOISE.sub(" ", local)
+    local = re.sub(r"[^A-Za-z]+", " ", local).strip()
+    if len(local) < 2:
+        return None
+    return local.capitalize() if local.islower() else local
+
+
+def _meaningful_name(name: str) -> bool:
+    name = clean(name).strip().strip('"')
+    return bool(re.search(r"[A-Za-z]{2,}", name)) and "@" not in name and not re.fullmatch(
+        r"[\w.-]+\.[a-z]{2,}", name, re.IGNORECASE)
+
+
+def sender_label(display_name: str, address: str) -> str:
+    """A human label: display name, else a relay's company from the local part, else the domain."""
+    if _meaningful_name(display_name):
+        return clean(display_name).strip().strip('"')[:200]
+    domain = address.rpartition("@")[2].lower()
+    if domain and domain_matches(domain, RELAY_DOMAINS):
+        company = company_from_local_part(address)
+        if company:
+            return company
+    return registrable_domain(domain) if domain else "Unknown address"

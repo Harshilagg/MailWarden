@@ -92,6 +92,8 @@ class FetchedMessage(BaseModel):
     content_complete: bool = True
     #: True if the message carries List-Unsubscribe or Precedence: bulk/list/junk.
     is_bulk: bool = False
+    #: Visible HTML anchors as (text, url). Transient, like the body.
+    links: tuple[tuple[str, str], ...] = Field(default=(), repr=False)
 
     @field_validator("received_at")
     @classmethod
@@ -106,9 +108,10 @@ class FetchedMessage(BaseModel):
         return domain.lower()
 
     def discard_content(self) -> None:
-        """Drop subject and body from memory once they are no longer needed."""
+        """Drop subject, body and links from memory once they are no longer needed."""
         self.subject = ""
         self.body_text = ""
+        self.links = ()
 
 
 class Classification(_Frozen):
@@ -175,3 +178,31 @@ class Application(_Frozen):
     current_stage: Stage
     last_update: dt.datetime
     source_message_ids: tuple[str, ...] = ()
+
+
+class JobPost(BaseModel):
+    """One job listed in a job-alert email."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    title: str = Field(min_length=2, max_length=200)
+    company: str | None = Field(default=None, max_length=200)
+    location: str | None = Field(default=None, max_length=200)
+    #: http(s) only; validated before storing or rendering.
+    link: str | None = Field(default=None, max_length=2000)
+
+
+class StoredJob(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    id: int
+    user_id: str
+    title: str
+    company: str | None
+    location: str | None
+    link: str | None
+    sender: str
+    account: str
+    message_id: str
+    received_at: dt.datetime
+    dismissed: bool = False

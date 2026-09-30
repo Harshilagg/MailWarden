@@ -62,23 +62,30 @@ class DesktopNotifier(Notifier):
         return f"{self._base}/i/{alert.account}/{alert.message_id}"
 
     def notify(self, alert: JobAlert) -> None:
-        text = notification_text(alert)
+        self._send(notification_text(alert), self.url_for(alert), f"mailwarden-{alert.message_id[:40]}")
+
+    def notify_text(self, text: str, dashboard_path: str) -> None:
+        text = clean(text).replace("\n", " ").strip().lstrip("-")[:120]
+        path = dashboard_path if dashboard_path.startswith("/") else "/"
+        self._send(text, f"{self._base}{path}", "mailwarden-notice")
+
+    def _send(self, text: str, url: str, group: str) -> None:
         try:
             if self.backend == "terminal-notifier":
-                self._terminal_notifier(text, self.url_for(alert), alert.message_id)
+                self._terminal_notifier(text, url, group)
             elif self.backend == "osascript":
                 self._osascript(text)
             elif self.backend == "desktop-notifier":
-                self._desktop_notifier(text, self.url_for(alert))
+                self._desktop_notifier(text, url)
         except Exception as e:  # a failed notification must never break a run
             log.warning("desktop notification failed (%s): %s", self.backend, type(e).__name__)
 
-    def _terminal_notifier(self, text: str, url: str, message_id: str) -> None:
+    def _terminal_notifier(self, text: str, url: str, group: str) -> None:
         exe = self._which("terminal-notifier")
         if not exe:
             raise FileNotFoundError("terminal-notifier")
         self._run(
-            [exe, "-title", APP_TITLE, "-message", text, "-open", url, "-group", f"mailwarden-{message_id[:40]}"],
+            [exe, "-title", APP_TITLE, "-message", text, "-open", url, "-group", group],
             check=False, timeout=15, capture_output=True,
         )
 

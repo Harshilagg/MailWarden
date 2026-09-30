@@ -13,6 +13,7 @@ from collections.abc import Callable
 
 from mailwarden.core.classify.base import BackendError, BackendUnavailable, InvalidOutput, LLMBackend, parse_output
 from mailwarden.core.classify.prompt import OUTPUT_SCHEMA, SCHEMA_NAME, build_messages
+from mailwarden.core.job_alerts import JOBS_SCHEMA, JOBS_SCHEMA_NAME, JOBS_SYSTEM_PROMPT
 from mailwarden.core.models import Classification
 from mailwarden.security.net import AllowlistedSession, RequestException
 
@@ -80,18 +81,25 @@ class GroqBackend(LLMBackend):
         self._last_call = self._clock()
 
     def classify(self, redacted_text: str) -> Classification:
+        return parse_output(self._chat_json(build_messages(redacted_text), SCHEMA_NAME, OUTPUT_SCHEMA))
+
+    def extract_jobs(self, redacted_text: str) -> str:
+        return self._chat_json(build_messages(redacted_text, system=JOBS_SYSTEM_PROMPT), JOBS_SCHEMA_NAME, JOBS_SCHEMA,
+                               max_tokens=2048)
+
+    def _chat_json(self, messages: list[dict[str, str]], schema_name: str, schema: dict, *, max_tokens: int = 1024) -> str:
         if getattr(self, "_exhausted", False):
             raise BackendUnavailable("Groq daily request limit reached; remaining mail stays pending")
         payload = {
             "model": self.model,
-            "messages": build_messages(redacted_text),
+            "messages": messages,
             "temperature": 0,
-            "max_completion_tokens": 1024,
+            "max_completion_tokens": max_tokens,
             "reasoning_effort": self._reasoning_effort,
             "include_reasoning": False,
             "response_format": {
                 "type": "json_schema",
-                "json_schema": {"name": SCHEMA_NAME, "strict": True, "schema": OUTPUT_SCHEMA},
+                "json_schema": {"name": schema_name, "strict": True, "schema": schema},
             },
         }
         for _ in range(_MAX_RATE_LIMIT_WAITS + 1):
@@ -134,4 +142,4 @@ class GroqBackend(LLMBackend):
             content = resp.json()["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError, json.JSONDecodeError):
             raise InvalidOutput("unexpected Groq response shape") from None
-        return parse_output(content or "")
+        return content or ""

@@ -6,7 +6,7 @@ import datetime as dt
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from mailwarden.core.models import Account, Application, EmailMeta, Stage
+from mailwarden.core.models import Account, Application, EmailMeta, JobPost, Stage, StoredJob
 
 
 class AccountRegistry(ABC):
@@ -69,6 +69,30 @@ class Repository(ABC):
     @abstractmethod
     def dismiss(self, user_id: str, account: str, message_id: str) -> bool:
         """Mark an urgent item as handled. Returns False if no such message."""
+
+    @abstractmethod
+    def delete_message(self, user_id: str, account: str, message_id: str) -> None:
+        """Forget one message (and jobs extracted from it) so it can be reprocessed."""
+
+    # job alerts
+    @abstractmethod
+    def save_jobs(self, user_id: str, *, account: str, message_id: str, sender: str,
+                  received_at: dt.datetime, posts: list[JobPost], keys: list[str]) -> int:
+        """Store jobs, de-duplicated by key across senders. Returns how many were new."""
+
+    @abstractmethod
+    def list_jobs(self, user_id: str, *, include_dismissed: bool = False, since: dt.datetime | None = None,
+                  limit: int = 500) -> list[StoredJob]: ...
+
+    @abstractmethod
+    def dismiss_job(self, user_id: str, job_id: int) -> bool: ...
+
+    # small per-user state (e.g. when the daily job notice was last sent)
+    @abstractmethod
+    def get_state(self, user_id: str, key: str) -> str | None: ...
+
+    @abstractmethod
+    def set_state(self, user_id: str, key: str, value: str) -> None: ...
 
     # digests
     @abstractmethod

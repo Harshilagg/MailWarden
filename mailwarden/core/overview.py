@@ -105,7 +105,7 @@ def build_digest(metas: list[EmailMeta], *, now: dt.datetime, period_start: dt.d
         if not (period_start <= m.received_at <= now):
             continue
         if m.gate is GateDecision.SENSITIVE:
-            sensitive[m.sender_name or "Unknown sender"] += 1
+            sensitive[m.sender_name or "an unnamed sender"] += 1
             if is_urgent(m):
                 digest.urgent += 1
             continue
@@ -119,7 +119,7 @@ def build_digest(metas: list[EmailMeta], *, now: dt.datetime, period_start: dt.d
             digest.unclassified += 1
             continue
         sections[m.classification.category].append(
-            DigestEntry(m.account, m.message_id, m.sender_name or "Unknown sender", m.classification.summary,
+            DigestEntry(m.account, m.message_id, m.sender_name or (m.sender_address or "").rpartition("@")[2] or "an unnamed sender", m.classification.summary,
                         m.received_at.isoformat())
         )
     digest.sections = {c.value: entries for c, entries in sections.items() if entries}

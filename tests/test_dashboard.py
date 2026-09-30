@@ -221,3 +221,43 @@ def test_item_page_for_notification_click(env):
 def test_settings_view(env):
     html = client(env).get("/settings").text
     assert "greenhouse.io" in html and "api.groq.com" in html and "m***@gmail.com" in html
+
+
+def _jobs(env):
+    from mailwarden.core.job_alerts import dedup_key
+    from mailwarden.core.models import JobPost
+
+    repo = env.repo_factory()
+    posts = [
+        JobPost(title="Backend Engineer", company="Zeta", location="Bengaluru", link="https://www.linkedin.com/jobs/view/1"),
+        JobPost(title="Marketing Intern", company="Acme", location="Mumbai", link="javascript:alert(1)"),
+    ]
+    repo.save_jobs("local", account="personal", message_id="ja1", sender="LinkedIn Job Alerts", received_at=NOW,
+                   posts=posts, keys=[dedup_key(p, "x") for p in posts])
+    repo.close()
+
+
+def test_jobs_page_highlights_matches_and_filters(env):
+    env.job_keywords, env.job_locations = ["backend"], ["Bengaluru"]
+    _jobs(env)
+    c = client(env)
+    html = c.get("/jobs").text
+    assert "Backend Engineer" in html and "Marketing Intern" in html and 'class="job match"' in html
+    assert "javascript:" not in html  # unsafe links are never rendered
+    assert 'href="https://www.linkedin.com/jobs/view/1"' in html
+    only = c.get("/jobs?match=1").text
+    assert "Backend Engineer" in only and "Marketing Intern" not in only
+
+
+def test_dismiss_job_requires_csrf(env):
+    _jobs(env)
+    c = client(env)
+    repo = env.repo_factory()
+    job_id = repo.list_jobs("local")[0].id
+    repo.close()
+    form = {"content-type": "application/x-www-form-urlencoded"}
+    assert c.post(f"/jobs/{job_id}/dismiss", content="csrf=bad", headers=form).status_code == 403
+    assert c.post(f"/jobs/{job_id}/dismiss", content=f"csrf={_csrf(env)}", headers=form).status_code == 303
+    repo = env.repo_factory()
+    assert job_id not in [j.id for j in repo.list_jobs("local")]
+    repo.close()

@@ -108,6 +108,7 @@ To stay fully local instead, install Ollama, `ollama pull qwen2.5:3b`, and set
 | `mailwarden dashboard [--open]` | Start the local dashboard on `127.0.0.1:8765` and print a one-time sign-in link |
 | `mailwarden open [--print-only]` | Open a fresh one-time sign-in link to the running dashboard |
 | `mailwarden digest` | Build the digest now (shown on the dashboard; optional Markdown copy) |
+| `mailwarden regate [--days 7] [--apply]` | Re-check stored mail with the current gate and rules and print a per-sender breakdown (no LLM calls). `--apply` reprocesses emails whose outcome changed |
 | `mailwarden schedule [--platform macos\|linux\|windows]` | Generate launchd / systemd / Task Scheduler files to review and install |
 
 Add `--quiet` before any command for warnings-only output (used by scheduled jobs).
@@ -122,6 +123,12 @@ Add `--quiet` before any command for warnings-only output (used by scheduled job
   job mail ("Amex · assessment · needs your attention"). Each item has
   **Open in Gmail** and **Done**.
 - **Applications**: a board of companies by stage, with each application's history.
+- **Job alerts**: every job listed in your job-alert emails (LinkedIn, Indeed,
+  Naukri, foundit, Internshala, Cutshort, jobs2web job agents ...), one row per job,
+  with duplicates across sites merged, newest first. Jobs matching
+  `[job_alerts] target_keywords` and `target_locations` are highlighted. Each row has
+  **Open** and **Dismiss**, and there's a "Matches only" filter. At most one
+  "N new jobs match your filters" notification per day.
 - **Digest**: the latest digest, grouped by category, with one-line summaries.
 - **Sensitive**: counts by sender only.
 - **Settings**: the classifier, allowed outbound hosts, accounts and sender tiers (read-only).

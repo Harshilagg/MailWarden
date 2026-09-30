@@ -15,10 +15,12 @@ from mailwarden.core.models import FetchedMessage
 from mailwarden.core.text import clean
 
 _URL = re.compile(r"(?i)\b(?:(?:https?|ftp)://|www\.)[^\s<>\"'`)\]}]+")
+# Lookbehinds make these start only at token boundaries, so a long run of
+# letters/digits costs O(n) instead of O(n^2) (no regex DoS from crafted mail).
 _BARE_LINK = re.compile(
-    r"(?i)\b(?:[a-z0-9-]+\.)+(?:com|in|io|co|org|net|ly|me|app|dev|ai|gl|to|link|page|xyz)/[^\s<>\"'`)\]}]*"
+    r"(?i)(?<![a-z0-9.-])(?:[a-z0-9-]+\.)+(?:com|in|io|co|org|net|ly|me|app|dev|ai|gl|to|link|page|xyz)/[^\s<>\"'`)\]}]*"
 )
-_EMAIL = re.compile(r"(?i)[a-z0-9._%+'-]+\s*(?:@|\[at\]|\(at\)|\{at\})\s*(?:[a-z0-9-]+\s*(?:\.|\[dot\]|\(dot\))\s*)+[a-z]{2,}")
+_EMAIL = re.compile(r"(?i)(?<![a-z0-9._%+'-])[a-z0-9._%+'-]+\s*(?:@|\[at\]|\(at\)|\{at\})\s*(?:[a-z0-9-]+\s*(?:\.|\[dot\]|\(dot\))\s*)+[a-z]{2,}")
 _SECRET_VALUE = re.compile(
     r"(?i)\b(password|passwd|pwd|passcode|pass|pin|otp|code|token|api[\s_-]?key|secret|key|username|user\s?id|login\s?id)"
     r"(\s*(?:is|:|=|-|–)\s*)(\S+)"
@@ -27,7 +29,7 @@ _KNOWN_TOKENS = re.compile(
     r"\b(?:ya29\.[\w.-]+|1//[\w.-]+|GOCSPX-[\w-]+|gsk_\w+|sk-[\w-]{16,}|ghp_\w+|gho_\w+|github_pat_\w+|"
     r"xox[abpr]-[\w-]+|AKIA[0-9A-Z]{16}|AIza[\w-]{30,}|eyJ[\w-]+\.[\w-]+\.[\w-]*)"
 )
-_LONG_TOKEN = re.compile(r"[A-Za-z0-9_\-+/=]{16,}")
+_LONG_TOKEN = re.compile(r"(?<![A-Za-z0-9_\-+/=])[A-Za-z0-9_\-+/=]{16,}")
 _ID_FORMATS = re.compile(r"\b[A-Z]{5}\d{4}[A-Z]\b|\b[A-Z]{4}0[A-Z0-9]{6}\b")
 _NUMBERISH = re.compile(r"\+?\(?\d(?:[\s().-]{0,2}\d)+")
 _DATE_SHAPES = re.compile(r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[.-]\d{1,2}[.-]\d{2,4}")
@@ -113,7 +115,9 @@ def _cut(text: str, limit: int) -> str:
 
 def for_llm(msg: FetchedMessage, max_body_chars: int) -> str:
     """The exact text an LLM would receive for this (already gated SAFE) message."""
-    subject = _cut(redact_text(msg.subject), 300)
-    body = _cut(redact_text(strip_footer(msg.body_text)), max_body_chars)
+    subject = _cut(redact_text(msg.subject[:1000]), 300)
+    # Only redact what could possibly be sent (redaction never grows text by more than ~2x
+    # per placeholder, so 3x the budget is plenty), bounding work on very large bodies.
+    body = _cut(redact_text(strip_footer(msg.body_text)[: max_body_chars * 3 + 200]), max_body_chars)
     domain = msg.sender_domain or "unknown"
     return f"From domain: {domain}\nSubject: {subject}\n\n{body}"

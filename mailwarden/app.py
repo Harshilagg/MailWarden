@@ -122,6 +122,8 @@ class App:
             repo_factory=lambda: SQLCipherRepository(path, key), accounts=self.accounts,
             rules_summary=rules_summary, backend_description=self.backend_description(),
             outbound_hosts=sorted(self.session.allowed), digest_times=self.settings.digest.times,
+            job_keywords=self.settings.job_alerts.target_keywords,
+            job_locations=self.settings.job_alerts.target_locations,
         )
         return create_app(deps)
 
