@@ -287,7 +287,23 @@ def test_logo_and_favicon_served_without_login(env):
 
 def test_pages_reference_local_logo_only(env):
     html = client(env).get("/").text
-    assert 'rel="icon" type="image/png" href="/static/logo-64.png"' in html and 'src="/static/logo-64.png"' in html
+    assert 'rel="icon" type="image/png" href="/static/logo-64.png"' in html
+    assert 'class="site-title"' in html  # the Mail/warden wordmark header
+
+
+def test_fonts_served_locally_and_allowed_by_csp(env):
+    from urllib.parse import quote
+
+    c = client(env, logged_in=False)
+    css = c.get("/static/style.css").text
+    assert 'format("opentype")' in css and 'format("otf")' not in css
+    for name in ("DunbarLow_Bold.otf", "Tempting - PERSONAL USE ONLY.otf"):
+        r = c.get("/static/fonts/" + quote(name))
+        assert r.status_code == 200 and r.headers["content-type"] == "font/otf"
+        assert r.content[:4] in (b"OTTO", b"\x00\x01\x00\x00")
+        assert "font-src 'self'" in r.headers["content-security-policy"]
+    for bad in ("..%2Fstyle.css", "..%2F..%2Fapp.py", "missing.otf", "x.exe"):
+        assert c.get("/static/fonts/" + bad).status_code in (401, 404)
 
 
 

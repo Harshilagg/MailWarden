@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from pathlib import Path
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -38,7 +39,7 @@ STAGE_COLUMNS = (Stage.APPLIED, Stage.ASSESSMENT, Stage.INTERVIEW, Stage.OFFER, 
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
-        "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; "
+        "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; form-action 'self'; "
         "frame-ancestors 'none'; base-uri 'none'"
     ),
     "X-Content-Type-Options": "nosniff",
@@ -89,6 +90,14 @@ def create_app(deps: DashboardDeps) -> FastAPI:
     static = resources.files("mailwarden.delivery.dashboard").joinpath("static")
     stylesheet = static.joinpath("style.css").read_bytes()
     logos = {name: static.joinpath(name).read_bytes() for name in ("logo-64.png", "logo-180.png")}
+    # Fonts shipped with the dashboard (static/fonts). Only these exact files are served.
+    font_types = {".otf": "font/otf", ".ttf": "font/ttf", ".woff": "font/woff", ".woff2": "font/woff2"}
+    fonts_dir = static.joinpath("fonts")
+    fonts = {
+        f.name: (f.read_bytes(), font_types[Path(f.name).suffix.lower()])
+        for f in (fonts_dir.iterdir() if fonts_dir.is_dir() else [])
+        if f.is_file() and Path(f.name).suffix.lower() in font_types
+    }
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -104,9 +113,10 @@ def create_app(deps: DashboardDeps) -> FastAPI:
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
+        public = request.url.path in _PUBLIC_PATHS or request.url.path.startswith("/static/fonts/")
         if request.headers.get("host", "") not in hosts:
             response: Response = PlainTextResponse("Invalid Host header", status_code=400)
-        elif request.url.path not in _PUBLIC_PATHS and not auth.token_matches(request.cookies.get(auth.COOKIE_NAME), token):
+        elif not public and not auth.token_matches(request.cookies.get(auth.COOKIE_NAME), token):
             response = render("login.html", request, status_code=401, expired=False)
         else:
             response = await call_next(request)
@@ -141,6 +151,14 @@ def create_app(deps: DashboardDeps) -> FastAPI:
         if data is None:
             return PlainTextResponse("Not found", status_code=404)
         return Response(data, media_type="image/png")
+
+    @app.get("/static/fonts/{name}")
+    def font(name: str) -> Response:
+        entry = fonts.get(name)  # exact file names only: no paths, no traversal
+        if entry is None:
+            return PlainTextResponse("Not found", status_code=404)
+        data, media_type = entry
+        return Response(data, media_type=media_type)
 
     @app.get("/favicon.ico")
     def favicon() -> Response:
