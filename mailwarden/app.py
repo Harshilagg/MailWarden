@@ -80,6 +80,12 @@ class App:
             return f"groq ({s.groq.model}) - CLOUD: receives redacted text of SAFE mail only"
         return f"ollama ({s.ollama.model}) - local: nothing leaves this machine"
 
+    def profile(self) -> dict | None:
+        """profile.yaml (None if not built yet)."""
+        from mailwarden import profile as prof
+
+        return prof.load_existing(self.home)
+
     def repository(self) -> Repository:
         return SQLCipherRepository.open(self.home / DB_RELATIVE_PATH, self.secrets, self.user_id)
 
@@ -136,6 +142,7 @@ class App:
             outbound_hosts=sorted(self.session.allowed), digest_times=self.settings.digest.times,
             job_keywords=self.settings.job_alerts.target_keywords,
             job_locations=self.settings.job_alerts.target_locations,
+            profile_loader=self.profile,
         )
         return create_app(deps)
 

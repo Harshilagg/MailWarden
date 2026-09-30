@@ -237,16 +237,35 @@ def _jobs(env):
     repo.close()
 
 
-def test_jobs_page_highlights_matches_and_filters(env):
+def test_jobs_page_without_profile_highlights_keywords(env):
     env.job_keywords, env.job_locations = ["backend"], ["Bengaluru"]
     _jobs(env)
-    c = client(env)
-    html = c.get("/jobs").text
+    html = client(env).get("/jobs?view=all").text
     assert "Backend Engineer" in html and "Marketing Intern" in html and 'class="job match"' in html
     assert "javascript:" not in html  # unsafe links are never rendered
     assert 'href="https://www.linkedin.com/jobs/view/1"' in html
-    only = c.get("/jobs?match=1").text
-    assert "Backend Engineer" in only and "Marketing Intern" not in only
+    assert "Build your profile" in html
+
+
+PROFILE = {"target_roles": ["backend / platform"], "avoid_roles": ["non-engineering"],
+           "locations": ["Bengaluru", "Remote"], "remote_ok": True}
+
+
+def test_jobs_page_prefilter_tabs_never_hide_jobs(env):
+    env.profile_loader = lambda: PROFILE
+    _jobs(env)
+    c = client(env)
+    cand = c.get("/jobs").text
+    assert "Backend Engineer" in cand and "Marketing Intern" not in cand
+    assert "Candidates (1)" in cand and "All (2)" in cand and "Filtered (1)" in cand
+    assert 'class="job match"' in cand  # target role highlighted
+    everything = c.get("/jobs?view=all").text
+    assert "Backend Engineer" in everything and "Marketing Intern" in everything
+    assert "non-engineering role" in everything and "location (Mumbai)" in everything
+    filt = c.get("/jobs?view=filtered").text
+    assert "Marketing Intern" in filt and "Backend Engineer" not in filt
+    assert c.get("/jobs?match=1").text.count("Backend Engineer") == 1  # old notification links still work
+    assert c.get("/jobs?view=bogus").status_code == 200
 
 
 def test_dismiss_job_requires_csrf(env):

@@ -66,6 +66,8 @@ class DashboardDeps:
     digest_times: list[str]
     job_keywords: list[str] = field(default_factory=list)
     job_locations: list[str] = field(default_factory=list)
+    #: Loads profile.yaml (None if not built yet); read per request so edits apply at once.
+    profile_loader: Callable[[], dict | None] = lambda: None
     now: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.UTC)
 
 
@@ -234,19 +236,40 @@ def create_app(deps: DashboardDeps) -> FastAPI:
                       sensitive_total=sum(d.sensitive_by_sender.values()))
 
     @app.get("/jobs")
-    def jobs(request: Request, match: int = 0) -> Response:
+    def jobs(request: Request, view: str = "candidates", match: int = 0) -> Response:
+        from mailwarden.core.prefilter import prefilter
+        from mailwarden.profile import match_role
+
+        if match:  # old links (/jobs?match=1) land on the candidates view
+            view = "candidates"
+        if view not in ("candidates", "all", "filtered"):
+            view = "candidates"
         repo = deps.repo_factory()
         try:
             stored = repo.list_jobs(deps.user_id)
         finally:
             repo.close()
-        rows = [(j, matches_filters(j.title, j.location, deps.job_keywords, deps.job_locations), safe_link(j.link))
-                for j in stored]
-        matched = sum(1 for r in rows if r[1])
-        if match:
-            rows = [r for r in rows if r[1]]
-        return render("jobs.html", request, rows=rows, only_matches=bool(match), total=len(stored), matched=matched,
-                      keywords=deps.job_keywords, locations=deps.job_locations)
+        try:
+            profile = deps.profile_loader()
+        except Exception:
+            profile = None
+        targets = list((profile or {}).get("target_roles") or [])
+        rows = []
+        for j in stored:
+            verdict = prefilter(j.title, j.location, profile) if profile else None
+            if targets:
+                highlight = match_role(j.title, targets) is not None
+            else:
+                highlight = matches_filters(j.title, j.location, deps.job_keywords, deps.job_locations)
+            rows.append((j, highlight and not (verdict and verdict.excluded), safe_link(j.link), verdict))
+        filtered = sum(1 for r in rows if r[3] and r[3].excluded)
+        counts = {"candidates": len(rows) - filtered, "all": len(rows), "filtered": filtered}
+        if view == "candidates":
+            rows = [r for r in rows if not (r[3] and r[3].excluded)]
+        elif view == "filtered":
+            rows = [r for r in rows if r[3] and r[3].excluded]
+        return render("jobs.html", request, rows=rows, view=view, counts=counts, has_profile=profile is not None,
+                      targets=targets, keywords=deps.job_keywords, locations=deps.job_locations)
 
     @app.post("/jobs/{job_id}/dismiss")
     async def dismiss_job(request: Request, job_id: int) -> Response:
@@ -259,7 +282,9 @@ def create_app(deps: DashboardDeps) -> FastAPI:
             repo.dismiss_job(deps.user_id, job_id)
         finally:
             repo.close()
-        return RedirectResponse("/jobs?match=1" if form.get("match") == "1" else "/jobs", status_code=303)
+        view = form.get("view", "candidates")
+        return RedirectResponse(f"/jobs?view={view}" if view in ("candidates", "all", "filtered") else "/jobs",
+                                status_code=303)
 
     @app.get("/sensitive")
     def sensitive(request: Request) -> Response:

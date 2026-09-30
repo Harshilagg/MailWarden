@@ -444,6 +444,39 @@ def cmd_profile(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_jobs(args: argparse.Namespace) -> int:
+    from collections import Counter
+
+    from mailwarden.core.prefilter import prefilter
+
+    app = build_app()
+    profile = app.profile()
+    if profile is None:
+        raise UsageError("no profile.yaml yet: run `mailwarden profile build` first")
+    repo = app.repository()
+    try:
+        jobs = repo.list_jobs(app.user_id)
+    finally:
+        repo.close()
+    verdicts = [(j, prefilter(j.title, j.location, profile)) for j in jobs]
+    kept = [j for j, v in verdicts if not v.excluded]
+    reasons = Counter(r.split(" (")[0] for _, v in verdicts for r in v.reasons)
+    print(f"{len(jobs)} jobs: {len(kept)} candidates, {len(jobs) - len(kept)} filtered (none are deleted)")
+    for reason, n in reasons.most_common():
+        print(f"  {n:>4}  {reason}")
+    show = args.show
+    if show in ("filtered", "all"):
+        print("\nFiltered:")
+        for j, v in verdicts:
+            if v.excluded:
+                print(f"  - {j.title} · {j.company or '?'} · {j.location or '?'}  -> {'; '.join(v.reasons)}")
+    if show in ("kept", "all"):
+        print("\nCandidates:")
+        for j in kept:
+            print(f"  + {j.title} · {j.company or '?'} · {j.location or '?'}")
+    return 0
+
+
 def cmd_set_groq_key(args: argparse.Namespace) -> int:
     app = build_app()
     key = getpass.getpass("Groq API key (input hidden): ").strip()
@@ -528,6 +561,11 @@ def build_parser() -> argparse.ArgumentParser:
     op = sub.add_parser("open", help="open a one-time sign-in link to the running dashboard")
     op.add_argument("--print-only", action="store_true", help="print the link instead of opening it")
     op.set_defaults(func=cmd_open)
+    jb = sub.add_parser("jobs", help="job-alert tools")
+    jb_sub = jb.add_subparsers(dest="jobs_command", required=True)
+    jp = jb_sub.add_parser("prefilter", help="show which jobs the local prefilter keeps or filters (and why)")
+    jp.add_argument("--show", choices=["summary", "filtered", "kept", "all"], default="filtered")
+    jb.set_defaults(func=cmd_jobs)
     pf = sub.add_parser("profile", help="job-matching profile from your CV and project files (local only)")
     pf_sub = pf.add_subparsers(dest="profile_command", required=True)
     pf_sub.add_parser("init", help="create the private profile folder")
