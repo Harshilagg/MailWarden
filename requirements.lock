@@ -766,6 +766,10 @@ pyobjc-framework-webkit==12.2.2 ; sys_platform == 'darwin' \
     --hash=sha256:e5588df2a73b377b59a994cc2a78b467e4341f4e4d28b52e8671e21a2811d3c1 \
     --hash=sha256:ef37692f0280151bf8164a718e334a9b3cb0abfc5455be14172280de7e277505
     # via pywebview
+pypdf==6.19.0 \
+    --hash=sha256:7e5d6e730e7dae87d560a2cee218b852f6498c8be61966f3cd02ead971e48d14 \
+    --hash=sha256:bbc43aca292369ccc6cbc8a921991ecf2538a3587ab5a116eff06c321d647155
+    # via mailwarden (pyproject.toml)
 pywebview==6.2.1 ; sys_platform == 'darwin' \
     --hash=sha256:71b7136752e40824655304d938efb62014218d1a90bd8e87e1cbdb1ce9c466af \
     --hash=sha256:9d07275f53894ab4d5e2e0e996227193e7187dec276d9b624dccbce029216b46

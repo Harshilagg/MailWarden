@@ -183,6 +183,27 @@ the mail since the previous digest. To also write a Markdown copy, set
 
 Logs go to `<home>/logs/` (mode 600).
 
+## Job-matching profile
+
+Job alerts are ranked against a profile built **locally** from your own files. They
+live in the private mailwarden home, never in the repo:
+
+```sh
+.venv/bin/mailwarden profile init     # creates <home>/profile/ and profile/projects/ (mode 700)
+# put your CV (PDF) in <home>/profile/, one Markdown file per project in profile/projects/
+chmod 600 <home>/profile/*.pdf <home>/profile/projects/*.md
+.venv/bin/mailwarden profile build --dry-run   # preview the diff
+.venv/bin/mailwarden profile build             # write <home>/profile.yaml (previous kept as .bak)
+```
+
+`profile.yaml` holds weighted skills, experience years, seniority, target/avoid roles,
+locations and your projects. Edit it by hand. On rebuild, the derived parts (skills,
+experience, projects) are refreshed, while your preferences (seniority, roles,
+locations, remote_ok) are kept. Only the project files count as project evidence; the
+CV's Projects section is ignored. The file never contains contact details: `build`
+refuses to write it if it would include an email, phone number, link or your name,
+because it's later given to the LLM for fit scoring.
+
 ## Tuning sender rules
 
 `sender_rules.yaml` (in the mailwarden home) has three tiers:

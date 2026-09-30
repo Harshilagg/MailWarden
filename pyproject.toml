@@ -21,6 +21,7 @@ dependencies = [
     "jinja2>=3.1.4",
     "desktop-notifier>=6.0",
     "pywebview>=5.3; sys_platform == 'darwin'",
+    "pypdf>=5",
 ]
 
 [project.optional-dependencies]

@@ -30,3 +30,9 @@ token*.json
 .DS_Store
 .idea/
 .vscode/
+
+# Personal profile inputs/outputs (normally in the private mailwarden home; never commit)
+profile/
+profile.yaml
+profile.yaml.bak
+*.pdf

@@ -19,6 +19,7 @@ from mailwarden.core.models import SLUG_PATTERN, Account, ProviderKind, Tier
 from mailwarden.core.pipeline import Pipeline
 from mailwarden.core.runner import Runner
 from mailwarden.delivery.dashboard.server import UnsafeBind
+from mailwarden.profile import ProfileError
 from mailwarden.storage.sqlite_store import StoreError
 from mailwarden.core.sender_rules import RulesError, SenderRules, normalise_entry, set_entry_tier
 from mailwarden.dryrun import run_dry_run
@@ -403,6 +404,44 @@ def cmd_launcher(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_profile(args: argparse.Namespace) -> int:
+    from mailwarden import profile as prof
+
+    home = home_dir()
+    if args.profile_command == "init":
+        base = prof.init_dirs(home)
+        print(f"Profile folder: {base}  (private, mode 700)")
+        print(f"  1. Put your CV there as a PDF, e.g. {base / 'cv.pdf'}")
+        print(f"  2. Add one Markdown file per project you want used: {base / 'projects'}/<name>.md")
+        print(f"  3. chmod 600 the files, then run: mailwarden profile build")
+        return 0
+
+    settings = build_app().settings
+    existing = prof.load_existing(home)
+    path = home / prof.PROFILE_FILE
+    old_text = path.read_text("utf-8") if path.exists() else ""
+    new = prof.build_profile(home, locations=settings.job_alerts.target_locations,
+                             today=dt.date.today(), existing=existing)
+    new_text = prof.dump(new)
+    cv_path, _ = prof._inputs(home)
+    person = prof.candidate_name(prof.read_pdf_text(cv_path))
+    leaks = prof.contact_leaks(new_text, person)
+    if leaks:
+        raise UsageError("refusing to write profile.yaml: it would contain " + ", ".join(leaks)
+                         + ". Remove it from the project files (profile.yaml is given to the LLM).")
+    change = prof.diff(old_text, new_text)
+    print(change if change else "profile.yaml is already up to date.")
+    top = ", ".join(list(new["skills"])[:8]) or "none found"
+    print(f"\nskills: {len(new['skills'])} (top: {top})")
+    print(f"experience_years: {new['experience_years']}   seniority: {new['seniority']}   "
+          f"projects: {len(new['projects'])}")
+    if args.dry_run:
+        print("\n(dry run: nothing written)")
+    elif change:
+        print(f"\nWrote {prof.write(home, new_text)} (previous version kept as {prof.PROFILE_FILE}.bak)")
+    return 0
+
+
 def cmd_set_groq_key(args: argparse.Namespace) -> int:
     app = build_app()
     key = getpass.getpass("Groq API key (input hidden): ").strip()
@@ -487,6 +526,12 @@ def build_parser() -> argparse.ArgumentParser:
     op = sub.add_parser("open", help="open a one-time sign-in link to the running dashboard")
     op.add_argument("--print-only", action="store_true", help="print the link instead of opening it")
     op.set_defaults(func=cmd_open)
+    pf = sub.add_parser("profile", help="job-matching profile from your CV and project files (local only)")
+    pf_sub = pf.add_subparsers(dest="profile_command", required=True)
+    pf_sub.add_parser("init", help="create the private profile folder")
+    pb = pf_sub.add_parser("build", help="build/refresh profile.yaml and show the diff")
+    pb.add_argument("--dry-run", action="store_true", help="show the diff without writing")
+    pf.set_defaults(func=cmd_profile)
     la = sub.add_parser("launcher", help="create a macOS app (Dock/Spotlight) that opens the dashboard")
     la.add_argument("--dir", help="where to put mailwarden.app (default ~/Applications)")
     la.add_argument("--browser", action="store_true", help="open in your browser instead of a native window")
@@ -518,7 +563,7 @@ def main(argv: list[str] | None = None) -> int:
     install_logging(logging.DEBUG if args.verbose else logging.WARNING if args.quiet else logging.INFO)
     try:
         return args.func(args)
-    except (UsageError, ConfigError, RulesError, StoreError, BackendError, UnsafeBind, InsecurePermissions, InsecureKeyringError, EgressBlocked, ProviderError, ValueError) as e:
+    except (UsageError, ConfigError, RulesError, StoreError, BackendError, UnsafeBind, ProfileError, InsecurePermissions, InsecureKeyringError, EgressBlocked, ProviderError, ValueError) as e:
         print(f"mailwarden: {scrub(str(e))}", file=sys.stderr)
         return 2
     except RequestException as e:
