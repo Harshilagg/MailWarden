@@ -100,6 +100,13 @@ class Repository(ABC):
     def save_score(self, user_id: str, job_id: int, *, score: float, level: str, detail: dict,
                    input_hash: str) -> None: ...
 
+    # calibration labels (your good/bad judgement of a job)
+    @abstractmethod
+    def save_label(self, user_id: str, job_id: int, label: str, *, score: float | None, level: str | None) -> None: ...
+
+    @abstractmethod
+    def list_labels(self, user_id: str) -> list[tuple[int, str, float | None]]: ...
+
     # small per-user state (e.g. when the daily job notice was last sent)
     @abstractmethod
     def get_state(self, user_id: str, key: str) -> str | None: ...

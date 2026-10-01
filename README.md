@@ -111,6 +111,7 @@ To stay fully local instead, install Ollama, `ollama pull qwen2.5:3b`, and set
 | `mailwarden open [--print-only]` | Open a fresh one-time sign-in link to the running dashboard |
 | `mailwarden digest` | Build the digest now (shown on the dashboard; optional Markdown copy) |
 | `mailwarden regate [--days 7] [--apply]` | Re-check stored mail with the current gate and rules and print a per-sender breakdown (no LLM calls). `--apply` reprocesses emails whose outcome changed |
+| `mailwarden jobs calibrate [--count 20] [--report]` | Label scored jobs good/bad one at a time (a mix of high, mid and low scores), then see how well scores agree with you and the biggest disagreements. `--report` only re-prints the report against current scores |
 | `mailwarden schedule [--platform macos\|linux\|windows]` | Generate launchd / systemd / Task Scheduler files to review and install |
 
 Add `--quiet` before any command for warnings-only output (used by scheduled jobs).

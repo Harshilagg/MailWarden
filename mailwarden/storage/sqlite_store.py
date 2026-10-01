@@ -118,6 +118,15 @@ CREATE TABLE IF NOT EXISTS job_sightings (
     seen_at TEXT NOT NULL,
     PRIMARY KEY (user_id, job_id, message_id)
 );
+CREATE TABLE IF NOT EXISTS job_labels (
+    user_id TEXT NOT NULL,
+    job_id INTEGER NOT NULL REFERENCES job_postings(id) ON DELETE CASCADE,
+    label TEXT NOT NULL CHECK (label IN ('good', 'bad')),
+    score_at_label REAL,
+    level_at_label TEXT,
+    labelled_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, job_id)
+);
 CREATE TABLE IF NOT EXISTS user_state (
     user_id TEXT NOT NULL,
     key TEXT NOT NULL,
@@ -573,6 +582,21 @@ class SQLCipherRepository(Repository):
         cur = self._db.execute("UPDATE job_postings SET dismissed_at = ? WHERE user_id = ? AND id = ?",
                                (_now(), user_id, job_id))
         return cur.rowcount > 0
+
+    def save_label(self, user_id: str, job_id: int, label: str, *, score: float | None, level: str | None) -> None:
+        self._db.execute(
+            "INSERT INTO job_labels (user_id, job_id, label, score_at_label, level_at_label, labelled_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (user_id, job_id) DO UPDATE SET label = excluded.label, "
+            "score_at_label = excluded.score_at_label, level_at_label = excluded.level_at_label, "
+            "labelled_at = excluded.labelled_at",
+            (user_id, job_id, label, score, level, _now()),
+        )
+
+    def list_labels(self, user_id: str) -> list[tuple[int, str, float | None]]:
+        """(job_id, label, score when labelled), oldest first."""
+        return [tuple(r) for r in self._db.execute(
+            "SELECT job_id, label, score_at_label FROM job_labels WHERE user_id = ? ORDER BY labelled_at",
+            (user_id,)).fetchall()]
 
     def get_state(self, user_id: str, key: str) -> str | None:
         row = self._db.execute("SELECT value FROM user_state WHERE user_id = ? AND key = ?", (user_id, key)).fetchone()

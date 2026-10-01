@@ -534,6 +534,20 @@ def cmd_jobs(args: argparse.Namespace) -> int:
         app.llm_backend().check()
         jobs_maintenance(app, profile, fetch=False, score_limit=args.limit)
         return 0
+    if args.jobs_command == "calibrate":
+        from mailwarden.calibrate import print_report, run_session
+
+        repo = app.repository()
+        try:
+            if not args.report:
+                try:
+                    run_session(repo, app.user_id, count=args.count, ask=input, out=sys.stdout)
+                except KeyboardInterrupt:
+                    print("\nStopped; labels so far are saved.")
+            print_report(repo, app.user_id, sys.stdout, now=dt.datetime.now(dt.UTC))
+        finally:
+            repo.close()
+        return 0
     return 0
 
 
@@ -629,6 +643,9 @@ def build_parser() -> argparse.ArgumentParser:
     jf.add_argument("--limit", type=int, default=None)
     js = jb_sub.add_parser("score", help="compute fit scores for candidates (preliminary or full)")
     js.add_argument("--limit", type=int, default=None)
+    jc = jb_sub.add_parser("calibrate", help="label jobs good/bad and see how well scores agree")
+    jc.add_argument("--count", type=int, default=20, help="jobs to show (default 20)")
+    jc.add_argument("--report", action="store_true", help="only print the agreement report")
     jb.set_defaults(func=cmd_jobs)
     pf = sub.add_parser("profile", help="job-matching profile from your CV and project files (local only)")
     pf_sub = pf.add_subparsers(dest="profile_command", required=True)
