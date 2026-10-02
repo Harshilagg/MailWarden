@@ -1,268 +1,470 @@
 # mailwarden
 
-Privacy-first, local-first email triage. mailwarden reads your mailboxes
-**read-only**, makes sure job-application mail is never missed, summarises the
-rest into a digest, and shows everything on a local dashboard.
+Privacy-first, local-first email triage for job seekers. mailwarden reads your Gmail
+**read-only**. It makes sure mail about your job applications is never missed, ranks
+the jobs in your job-alert emails against your own profile, summarises everything
+else into a digest, and shows it all on a local dashboard.
 
-- Classification uses **Groq's free tier** (`openai/gpt-oss-20b`), which only ever
-  receives redacted text of non-sensitive mail. A fully local Ollama backend is
-  available as an alternative.
-- OTPs, bank/UPI/card mail, password resets, login alerts and ID/KYC/tax mail
-  are caught by a local gate and **never** reach any LLM.
-- OAuth tokens and keys live only in your OS keyring.
+- **Sensitive mail never reaches an AI.** A local gate catches OTPs, bank/UPI/card
+  mail, password resets, login alerts and ID/KYC/tax mail before any model sees
+  anything.
+- **Free to run.** Classification uses Groq's free tier (`openai/gpt-oss-20b`), which
+  receives only redacted text of non-sensitive mail. Alternatively, a fully local
+  Ollama backend keeps everything on your machine.
+- **Nothing useful on disk.** OAuth tokens and keys live only in your OS keyring. The
+  database is SQLCipher-encrypted and stores no email bodies or subjects.
+- **Local only.** The dashboard listens on 127.0.0.1 and loads no external assets and
+  no JavaScript.
 
-> Status: phase 4 of 5 (delivery). See `SECURITY.md`.
+[SECURITY.md](SECURITY.md) lists exactly what leaves your machine, to which host, and
+what is stored.
+
+## How it works
+
+```
+Gmail (read-only) → sender rules → sensitivity gate → redaction → classify (LLM or rule)
+                  → encrypted store → Urgent · Applications · Job alerts · Digest · notifications
+```
+
+1. **Sender rules** put senders in tiers: `priority` (job mail), `sensitive` (banks,
+   payments, government, account security), `ignore` and `job_alert` (job boards).
+2. The **sensitivity gate** checks every message locally. Sensitive mail is held back:
+   only the sender name, the time and a friendly reason are kept. Held-back *job* mail
+   still shows up as "Company · stage · needs your attention".
+3. **Redaction** removes addresses, phone numbers, digit runs, links and secrets from
+   the rest. Social notifications, job-board alerts and bulk mail are labelled by rule,
+   with no LLM call.
+4. The **classifier** labels each remaining email (job, personal, newsletter ...). It
+   also extracts the company, role, stage and deadline. Job mail updates your
+   Applications.
+5. **Job alerts** are split into individual jobs and de-duplicated across sites. Each
+   job is filtered and scored against your profile, and the best ones appear in
+   **Apply today**.
 
 ## Requirements
 
 - Python 3.11+ (3.13 recommended) and [uv](https://docs.astral.sh/uv/)
-- macOS, Linux or Windows with a working OS keyring
-  (macOS Keychain, Secret Service / KWallet, Windows Credential Manager)
-- A free [Groq](https://console.groq.com) API key (or, alternatively, a local [Ollama](https://ollama.com))
+- macOS, Linux or Windows with a working OS keyring: macOS Keychain, Secret Service or
+  KWallet on Linux, or Windows Credential Manager
+- A Google account and a free Google Cloud project for your own OAuth client
+- A free [Groq](https://console.groq.com) API key, or a local
+  [Ollama](https://ollama.com)
 
-## Install
+The desktop app window and the app's own notifications are macOS-only. Everything
+else also runs on Linux and Windows, but has mainly been tested on macOS.
+
+## Setup
+
+### 1. Install
 
 ```sh
-make install          # creates .venv from hash-pinned requirements-dev.lock
-.venv/bin/mailwarden init
+make install                # .venv from hash-pinned requirements-dev.lock
+.venv/bin/mailwarden init   # prints the mailwarden home folder
 ```
 
-`init` creates the mailwarden home directory (mode 700) containing
-`config.toml` and `sender_rules.yaml` (mode 600). The location is
-`~/Library/Application Support/mailwarden` on macOS, `~/.config/mailwarden` on
-Linux, `%LOCALAPPDATA%\mailwarden` on Windows. Override with `MAILWARDEN_HOME`.
+`init` creates the private mailwarden home (mode 700) with `config.toml` and
+`sender_rules.yaml` (mode 600). The home is:
 
-## Create your own Google OAuth client (one time, free)
+- macOS: `~/Library/Application Support/mailwarden`
+- Linux: `~/.config/mailwarden`
+- Windows: `%LOCALAPPDATA%\mailwarden\mailwarden`
 
-mailwarden ships no shared client ID. Each user creates their own:
+Set `MAILWARDEN_HOME` to use another folder. mailwarden refuses to start if these
+files are readable by other users.
 
-1. Open <https://console.cloud.google.com/>, create a project (e.g. `mailwarden`).
-2. **APIs & Services → Library**, enable the **Gmail API**.
-3. **APIs & Services → OAuth consent screen** (Google Auth Platform):
-   - User type: **External**.
-   - App name and support email: anything, your own address.
-   - **Data access / Scopes**: add only
-     `https://www.googleapis.com/auth/gmail.readonly`.
-   - **Audience / Test users**: add every Gmail address you will connect.
+### 2. Create your own Google OAuth client (one time, free)
+
+mailwarden ships no shared client ID, so each user creates their own.
+
+1. In <https://console.cloud.google.com/>, create a project (e.g. `mailwarden`).
+2. **APIs & Services → Library**: enable the **Gmail API**.
+3. **OAuth consent screen** (Google Auth Platform):
+   - User type: **External**. App name: anything. Support email: your own address.
+   - **Data access / Scopes**: add only `https://www.googleapis.com/auth/gmail.readonly`.
+   - **Audience → Test users**: add every Gmail address you will connect.
 4. **Credentials → Create credentials → OAuth client ID**, type **Desktop app**.
    Download the JSON.
-
-Then:
 
 ```sh
 .venv/bin/mailwarden add-account --provider gmail --name personal \
     --client-secrets ~/Downloads/client_secret_XXXX.json
 ```
 
-The client is copied into the keyring, so delete the JSON file afterwards.
-Later accounts don't need `--client-secrets`.
+The client is copied into the keyring, so delete the JSON file afterwards. Later
+accounts don't need `--client-secrets`. Google warns that the app is unverified. This
+is expected for a personal client, so choose **Continue**. mailwarden requests only
+`gmail.readonly`. A token with any broader scope is revoked and refused.
 
-Your browser opens Google's consent page. Google will warn that the app is
-unverified, which is expected for a personal client: choose *Continue*.
-mailwarden requests **only** `gmail.readonly`. If a token ever comes back with
-any broader scope, mailwarden revokes it and refuses to run.
+**Seven-day sign-ins.** While the consent screen is in *Testing*, Google expires
+refresh tokens after 7 days. To avoid re-running `add-account` every week, set the
+publishing status to *In production* without submitting for verification. That is
+allowed for personal use (fewer than 100 users). You will still see the "unverified
+app" warning when you sign in.
 
-**Token lifetime note.** While the consent screen's publishing status is
-*Testing*, Google expires refresh tokens after 7 days, so you would need to
-re-run `add-account` weekly. To avoid that, set the publishing status to
-*In production* without submitting for verification. For personal use (fewer
-than 100 users) Google allows this; you keep seeing the "unverified app"
-warning at sign-in, and tokens no longer expire weekly.
+### 3. Set up the classifier
 
-## Groq API key (free)
+**Groq (default, free):**
 
-1. Sign up at <https://console.groq.com>. Don't add a billing method, so the org
+1. Sign up at <https://console.groq.com>. Don't add a billing method: the account then
    stays on the free tier and can't be charged.
-2. **Settings → Data Controls**: enable **Zero Data Retention**.
-3. **API Keys → Create API key**, then:
+2. In **Settings → Data Controls**, turn on **Zero Data Retention**.
+3. In **API Keys**, choose **Create API key**, then run:
 
 ```sh
 .venv/bin/mailwarden set-groq-key      # hidden prompt; stored in the OS keyring
-.venv/bin/mailwarden doctor --llm      # checks the key with a synthetic email
+.venv/bin/mailwarden doctor --llm      # tests the key with a built-in fake email
 ```
 
-Free-tier limits are 8,000 tokens/min and 1,000 requests/day, about 6 emails per
-minute. mailwarden paces itself with a local token bucket
-(`[llm] max_llm_calls_per_minute = 6`) and caps each run
-(`max_llm_calls_per_run = 150`). Anything it can't finish is kept as *pending*
-and retried on the next run. The model is set by `[groq] model`. The first
-run only backfills `[gmail] full_sync_days` (7) days.
+**Ollama (fully local alternative):**
 
-To stay fully local instead, install Ollama, `ollama pull qwen2.5:3b`, and set
-`[llm] backend = "ollama"`.
+1. Install Ollama.
+2. Run `ollama pull qwen2.5:3b`.
+3. Set `[llm] backend = "ollama"` in `config.toml`.
+
+Nothing then leaves your machine for classification or scoring.
+
+### 4. Check, preview, run
+
+```sh
+.venv/bin/mailwarden doctor --sync             # keyring, permissions, scopes, message count
+.venv/bin/mailwarden init --reset-rules        # only if your sender_rules.yaml predates job_alert
+.venv/bin/mailwarden dry-run --last 50 --summary
+.venv/bin/mailwarden run                       # first real sync (backfills the last 7 days)
+```
+
+For each message, `dry-run` shows the tier, the gate decision and the exact redacted
+text that *would* go to the LLM. It stores nothing and notifies no one. It sends
+nothing either, unless you add `--with-llm`.
+
+### 5. Run it in the background
+
+```sh
+.venv/bin/mailwarden schedule     # writes files to <home>/schedule/<platform>/ and prints install commands
+```
+
+- **macOS:** launchd agents sync every 10 minutes, build the digest at your digest
+  times and keep the dashboard running. They use `StartCalendarInterval`, so a run
+  missed while the laptop sleeps happens on wake (cron would skip it).
+- **Linux:** systemd user timers with `Persistent=true`.
+- **Windows:** Task Scheduler XML with "run as soon as possible after a missed start".
+
+Logs go to `<home>/logs/` (mode 600). Each sync also fetches the job descriptions it
+can fetch automatically, and scores new jobs.
+
+### 6. Open the dashboard
+
+```sh
+.venv/bin/mailwarden launcher   # macOS: creates ~/Applications/mailwarden.app
+```
+
+Drag `mailwarden.app` to the Dock, or press ⌘Space and type "mailwarden". The app
+opens the dashboard in its own window (macOS WebKit, not a browser) and signs you in
+each time.
+
+On the first launch, macOS asks whether "mailwarden-python" may use your Keychain.
+Enter your Mac login password and choose **Always Allow**.
+
+Without the app, you have two options:
+
+- `mailwarden dashboard --open` runs the dashboard in the foreground.
+- `mailwarden open` works when the background agent is running. It opens a one-time
+  sign-in link in your browser.
+
+## Daily use
+
+Open the app and go through these views:
+
+1. **Urgent:** job mail that needs you, soonest deadline first. It includes held-back
+   job mail, which you open in Gmail because mailwarden deliberately didn't read it.
+   Click **Done** when an item is handled. Nothing leaves Urgent until you do.
+2. **Apply today:** your best-matching new jobs, with the project to lead with and the
+   skills you're missing.
+3. **Digest:** everything else since the last digest, by category, one line each.
+4. **Applications:** where each application stands.
+
+Reload (⌘R) to see new items. The background sync runs every 10 minutes.
+
+## The dashboard
+
+| View | What it shows |
+| --- | --- |
+| **Urgent** | Job items that need action, by deadline. Held-back job mail shows the company, the stage and a friendly reason ("Contains a verification code"), never the subject. Items are pinned: only **Done** removes them, even if they are reclassified later. Every item has an **Open in Gmail** link. |
+| **Applications** | Companies by stage (applied, assessment, interview, offer, rejection), with each application's history. |
+| **Job alerts** | Every job from your job-alert emails (see the next table). |
+| **Apply today** | The top jobs by rank. Jobs you dismissed, filtered out or already applied to are skipped. |
+| **Digest** | The latest digest. Newsletters and job alerts are collapsed, and sensitive mail appears only as counts by sender. |
+| **Sensitive** | Counts by sender only. |
+| **Settings** | Read-only: the classifier, the allowed outbound hosts, accounts and sender tiers. |
+
+The **Job alerts** view has these controls:
+
+| Control | What it does |
+| --- | --- |
+| Tabs | **Candidates** (jobs that pass the prefilter), **All**, and **Filtered** (with the reason) |
+| Sort | **Best match** or **Newest** |
+| Chips | Filter by source type and by source |
+| Each card | Fit score (*preliminary* or *full*), why, the project to lead with, missing skills, job-description status |
+| Card buttons | **Open**, **Fetch job description** (where allowed), **Paste JD**, **Dismiss** |
+
+Every account you add appears on the same dashboard. Sign-in uses a one-time link
+that is valid for 10 minutes. A cookie then keeps you signed in for 90 days.
+
+## Job matching
+
+### Your profile
+
+Jobs are scored against a profile that is built **locally** from your own files. The
+files live in the private mailwarden home, never in the repo:
+
+```sh
+.venv/bin/mailwarden profile init                # creates <home>/profile/ and profile/projects/
+# put your CV (PDF) in <home>/profile/ and one Markdown file per project in profile/projects/
+chmod 600 <home>/profile/*.pdf <home>/profile/projects/*.md
+.venv/bin/mailwarden profile build --dry-run     # preview the diff
+.venv/bin/mailwarden profile build               # write <home>/profile.yaml (previous kept as .bak)
+```
+
+`profile.yaml` holds weighted skills, years of experience, seniority, target and
+avoid roles, locations and your projects. Only the project files count as project
+evidence. The Projects section of your CV is ignored.
+
+You can edit the file by hand. A rebuild replaces only the generated blocks
+(`skills`, `experience_years`, `projects`). Every other line stays exactly as you
+wrote it, comments included. These sections are yours to edit:
+
+- `skill_overrides: {skill: weight}` replaces automatic weights, and adds skills the
+  parser missed. Scores use the automatic weights with these overrides applied.
+- `extra_project_skills: {project name: [skills]}` adds skills to that project on
+  every rebuild. `build` warns if a name matches no project file.
+- `education`, `experience_summary` and `highlights` are free text given to the
+  scorer.
+- `target_roles` and `avoid_roles` entries may list alternatives separated by `/`,
+  e.g. `sde / sde-1 / sde i` or `intern / internship`. Matching is case-insensitive,
+  on whole words.
+- `locations` entries may use `/` alternatives too, and `Delhi NCR` covers Gurugram,
+  Noida and Delhi. `remote_ok` accepts remote jobs.
+
+`profile.yaml` is given to the LLM for scoring, so it must never contain contact
+details. `build` refuses to write the file if it would include an email address, a
+phone number, a link or your name.
+
+### Prefilter
+
+Before scoring, a local prefilter marks jobs that are clearly not for you:
+
+- seniority words (senior, lead, manager, architect, staff, principal ...)
+- levels above new grad (SDE II, Engineer 3, L5 ...), unless the description says
+  0-2 years
+- "N+ years" with N above 2
+- your `avoid_roles`
+- locations outside your list, unless the job is remote
+
+Filtered jobs are never deleted. They stay under **All**, with the reason.
+
+### Fit scores
+
+The LLM gives each candidate a score from 0 to 10. With it come the matched and
+missing skills, the project to lead with, and one sentence explaining the score.
+
+- A **preliminary** score comes from the alert alone and is capped at 7.
+- A **full** score uses the job description. A missing must-have skill caps it at 6,
+  and experience above your level caps it at 4. If the description demands a CS/IT
+  degree and your education isn't one, "CS degree required" is added to the missing
+  skills.
+
+Scores are cached, and only redone when the job or your profile changes. At most
+`max_scores_per_run` jobs are scored per sync. Scores only order jobs; nothing is
+hidden.
+
+### Job descriptions
+
+- **Automatic:** fetched for candidates hosted on Greenhouse, Lever or Ashby, through
+  their public job-board APIs, and cached for 7 days.
+- **Buttons (opt-in):** set `[job_alerts] jd_button_fetch = true` to get **Fetch job
+  description** and **Fetch JDs for top 10**. These work only for Greenhouse, Lever,
+  Ashby, Workday, SmartRecruiters and SuccessFactors/jobs2web.
+- **Paste:** for LinkedIn, Naukri, Indeed, Internshala, click-tracking links and other
+  sites, the card says why the description can't be fetched. Open the job, copy the
+  description, and use **Paste JD → Save and score**.
+
+### Apply today and ranking
+
+A job's rank is its fit score, adjusted as follows:
+
+| Condition | Adjustment |
+| --- | --- |
+| Seen in the last 3 days | +0.5 |
+| First seen more than 3 weeks ago | -1 |
+| Company on `[job_alerts] watchlist` | +1 |
+
+At equal rank, full scores come before preliminary ones. **Apply today** shows the
+top `apply_today_count` jobs (default 8). It skips jobs you dismissed, jobs filtered
+out, and jobs whose company and role are already in your Applications. You get one
+notification a day: "N new jobs scored 7+".
+
+### Sources and duplicates
+
+Each job records its source type and its source:
+
+- Source types: job boards, company careers, startup platforms, communities, and
+  company alerts sent via hiring systems.
+- Sources: LinkedIn, Naukri, Naukri Campus, Internshala, Cutshort, "Bayer (jobs2web)"
+  and so on.
+
+The same job from several sources (same company, title and city) is shown as one
+card, which lists the other sources under "also on". mailwarden also tidies what
+alerts say:
+
+- A title like "SAP EAM - Bangalore, IN" becomes the title "SAP EAM" with the
+  location Bangalore.
+- Relay names become real companies (Amex Careers → American Express,
+  EYJobAlerts → EY).
+
+### Calibration
+
+```sh
+.venv/bin/mailwarden jobs calibrate           # label 20 jobs good/bad, then see agreement
+.venv/bin/mailwarden jobs calibrate --report  # re-check after profile changes and rescoring
+```
+
+The report shows:
+
+- how many jobs you called good scored 7+
+- how many jobs you called bad scored below 5
+- the biggest disagreements, with the model's reason
+
+Use it to adjust `profile.yaml`. Your labels stay in the encrypted database.
+
+## Sender rules and the sensitivity gate
+
+`sender_rules.yaml` in the mailwarden home has four tiers. A domain rule also matches
+its subdomains, and an exact address beats a domain rule.
+
+- **priority:** job mail. Application-tracking and assessment platforms are
+  pre-seeded. Priority mail still goes through the gate.
+- **sensitive:** banks, UPI and payment apps, cards, brokers, tax and government, and
+  account-security senders. This mail is never sent to any LLM.
+- **ignore:** senders you never want processed. They are only counted.
+- **job_alert:** job-board alerts (LinkedIn job alerts, Indeed, Naukri, foundit,
+  Internshala). They are labelled by rule and never notify. Their jobs are extracted
+  for Job alerts.
+
+Independently of tiers, the gate inspects the sender name, subject and body. It holds
+back anything that looks like an OTP or verification code, a password reset, a login
+alert, a bank, UPI or card transaction, a statement, or KYC, PAN, Aadhaar or tax mail.
+Promoting a sender never bypasses these content checks. Two exceptions keep job mail
+visible:
+
+- A recruiting subdomain of a sensitive company (e.g.
+  `recruitment.americanexpress.com`) counts as priority.
+- Job mail that was held back only because of footer wording ("do not share",
+  "password") is released when it clearly comes from a hiring system.
+
+SECURITY.md has the exact rules. To tune them:
+
+```sh
+.venv/bin/mailwarden dry-run --last 100 --summary          # what was held back, and why
+.venv/bin/mailwarden promote talent@somefintech.com priority
+.venv/bin/mailwarden promote offers.somestore.com ignore
+.venv/bin/mailwarden regate --days 7                       # re-check stored mail with today's rules
+.venv/bin/mailwarden regate --days 7 --apply               # reprocess what changed
+```
+
+## Notifications
+
+Job mail that needs action triggers a notification: an assessment, interview or
+offer, or an action for a company you're tracking or a priority sender. The
+notification shows only the company, the stage and the deadline. For held-back job
+mail it says "needs your attention". Clicking it opens that entry.
+
+- **macOS:** after `mailwarden launcher`, the mailwarden app posts notifications
+  itself, with its name and logo, and a click opens the entry in the app window.
+  Without the app, mailwarden uses `terminal-notifier` if it is installed, otherwise
+  `osascript`. macOS attributes `osascript` notifications to Script Editor, so a
+  click opens Script Editor. `mailwarden notify-test` sends a test notification.
+- **Linux and Windows:** notifications use `desktop-notifier`. Clicks are handled only
+  while the sending process is alive (`[notifications] click_wait_seconds`).
+
+There is at most one digest notification per day.
+
+## Configuration
+
+`config.toml` in the mailwarden home holds non-secret settings only. Secrets are in
+the keyring. These are the settings you're most likely to change:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `[llm] backend` | `groq` | `groq` or `ollama` |
+| `[llm] max_body_chars` | 1500 | Body characters sent per email, after redaction |
+| `[llm] max_llm_calls_per_minute` | 6 | Local pacing for Groq's free tier |
+| `[llm] max_llm_tokens_per_minute` | 7000 | Local pacing; Groq's free tier allows 8,000 tokens a minute |
+| `[llm] max_llm_calls_per_run` | 150 | Cap per sync; unfinished work stays pending |
+| `[groq] model` | `openai/gpt-oss-20b` | Any Groq model with strict structured outputs |
+| `[gmail] full_sync_days` | 7 | Days fetched on the first run |
+| `[dashboard] port` | 8765 | Local dashboard port (the host is always 127.0.0.1) |
+| `[notifications] enabled` | true | Desktop notifications |
+| `[digest] times` | 08:00, 18:00 | When the digest is built |
+| `[digest] markdown_dir` | off | Optional plaintext Markdown copy of the digest |
+| `[job_alerts] watchlist` | `[]` | Companies whose jobs get +1 rank |
+| `[job_alerts] apply_today_count` | 8 | Jobs in Apply today |
+| `[job_alerts] jd_auto_fetch` | true | Automatic fetches from Greenhouse, Lever and Ashby APIs |
+| `[job_alerts] jd_button_fetch` | false | Fetch buttons on the Job alerts page |
+| `[job_alerts] max_scores_per_run` | 40 | Jobs scored per sync |
+| `[job_alerts] max_jd_fetches_per_run` | 30 | Job descriptions fetched per sync |
+| `[job_alerts] daily_notification` | true | "N new jobs scored 7+", once a day |
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `mailwarden init [--reset-rules]` | Create config dir and default config; `--reset-rules` restores the seeded `sender_rules.yaml` (old file kept as `.bak`) |
-| `mailwarden add-account --provider gmail --name <n>` | OAuth sign-in, token stored in keyring |
+| `mailwarden init [--reset-rules]` | Create the home folder and default config. `--reset-rules` restores the seeded `sender_rules.yaml` and keeps the old file as `.bak` |
+| `mailwarden add-account --provider gmail --name <n> [--client-secrets FILE]` | Google sign-in; the token is stored in the keyring |
 | `mailwarden accounts` | List accounts (addresses masked) |
-| `mailwarden doctor [--sync] [--llm]` | Check keyring, permissions, allowlist, granted scopes; `--sync` counts recent messages without showing content; `--llm` tests the backend with a synthetic email |
+| `mailwarden forget-account <n>` | Revoke the token at Google, delete it, and delete the account's stored data |
 | `mailwarden set-groq-key` | Store the Groq API key in the keyring (hidden input) |
-| `mailwarden run` | One sync + classify pass; stores metadata and classifications in the encrypted DB |
-| `mailwarden dry-run [--last N] [--account n] [--summary] [--with-llm]` | Show, per message, the tier, gate decision and the exact redacted text that *would* go to the LLM. Stores and notifies nothing; sends nothing unless `--with-llm` is given, in which case it also prints each classification and whether a notification would fire |
+| `mailwarden doctor [--sync] [--llm]` | Check the keyring, permissions, allowlist, scopes and notifications. `--sync` counts recent messages; `--llm` tests the classifier with a fake email |
+| `mailwarden dry-run [--last N] [--account n] [--summary] [--with-llm]` | Preview tiers, gate decisions and redacted LLM text; stores nothing |
+| `mailwarden run` | One sync: classify mail, extract and score jobs, notify |
+| `mailwarden digest` | Build the digest now, and send the daily jobs notification |
+| `mailwarden regate [--days 7] [--apply] [--message ID]` | Re-check stored mail with the current rules (no LLM). `--apply` reprocesses what changed |
 | `mailwarden promote <address-or-domain> <tier>` | Move a sender to `priority`, `sensitive`, `ignore`, `job_alert` or `default` |
-| `mailwarden forget-account <n>` | Revoke token at Google, delete it from the keyring, delete the account's stored data |
+| `mailwarden profile init` | Create the profile folder |
+| `mailwarden profile build [--dry-run]` | Build `profile.yaml` from your CV and projects |
+| `mailwarden jobs prefilter [--show summary\|filtered\|kept\|all]` | Show which jobs the prefilter keeps or filters, and why |
+| `mailwarden jobs fetch [--limit N]` | Fetch job descriptions from the Greenhouse, Lever and Ashby APIs now |
+| `mailwarden jobs score [--limit N]` | Score jobs now |
+| `mailwarden jobs calibrate [--count 20] [--report]` | Label jobs good or bad, and see how well the scores agree |
+| `mailwarden dashboard [--open]` | Run the dashboard in the foreground and print a one-time sign-in link |
+| `mailwarden open [--print-only]` | Open a one-time sign-in link to the running dashboard |
+| `mailwarden app [--path /jobs]` | Open the dashboard in its own window (macOS) |
+| `mailwarden launcher [--browser]` | Create `~/Applications/mailwarden.app` (macOS). `--browser` makes it open your browser instead |
+| `mailwarden notify-test` | Send a test notification |
+| `mailwarden schedule [--platform macos\|linux\|windows]` | Generate background-job files and print install commands |
 
-| `mailwarden dashboard [--open]` | Start the local dashboard on `127.0.0.1:8765` and print a one-time sign-in link |
-| `mailwarden app [--path /jobs]` | Open the dashboard in its own native window (macOS; WebKit, no browser) |
-| `mailwarden launcher [--browser]` | Create `~/Applications/mailwarden.app` for the Dock/Spotlight (native window, or your browser with `--browser`) |
-| `mailwarden open [--print-only]` | Open a fresh one-time sign-in link to the running dashboard |
-| `mailwarden digest` | Build the digest now (shown on the dashboard; optional Markdown copy) |
-| `mailwarden regate [--days 7] [--apply]` | Re-check stored mail with the current gate and rules and print a per-sender breakdown (no LLM calls). `--apply` reprocesses emails whose outcome changed |
-| `mailwarden jobs calibrate [--count 20] [--report]` | Label scored jobs good/bad one at a time (a mix of high, mid and low scores), then see how well scores agree with you and the biggest disagreements. `--report` only re-prints the report against current scores |
-| `mailwarden schedule [--platform macos\|linux\|windows]` | Generate launchd / systemd / Task Scheduler files to review and install |
+Put `--quiet` before any command for warnings-only output (scheduled jobs use it), or
+`-v` for debug logs.
 
-Add `--quiet` before any command for warnings-only output (used by scheduled jobs).
+## Troubleshooting
 
-## Dashboard
-
-```sh
-.venv/bin/mailwarden dashboard --open
-```
-
-- **Urgent**: job mail that needs you, soonest deadline first, including held-back
-  job mail ("Amex · assessment · needs your attention"). Each item has
-  **Open in Gmail** and **Done**. Items are *pinned*: once something is urgent, it
-  leaves only when you click **Done**, even if it is later reclassified
-  (for example by `regate --apply`).
-- **Applications**: a board of companies by stage, with each application's history.
-- **Job alerts**: every job listed in your job-alert emails (LinkedIn, Indeed,
-  Naukri, foundit, Internshala, Cutshort, jobs2web job agents ...), one row per job,
-  with duplicates across sites merged, newest first. Jobs matching
-  `[job_alerts] target_keywords` and `target_locations` are highlighted. Each row has
-  **Open** and **Dismiss**, and there's a "Matches only" filter. At most one
-  "N new jobs match your filters" notification per day.
-- Job alerts has **source chips**: filter by type (job boards, company careers, startup
-  platforms, communities, company alerts via hiring systems) and by source (LinkedIn,
-  Naukri, Naukri Campus, Internshala, Cutshort, "Bayer (jobs2web)" ...), with counts,
-  built only from sources that have produced jobs. The same job from several sources
-  (same company, title and city) is one card, which lists the others under "also on".
-  Titles like "SAP EAM - Bangalore, IN" become title "SAP EAM" with location
-  "Bangalore", and relay names become real companies (Amex Careers → American Express,
-  EYJobAlerts → EY).
-- **Apply today** (`/apply`, also a tab on Job alerts): your top `[job_alerts]
-  apply_today_count` jobs (default 8) by rank. Rank is the fit score, +0.5 if seen in the
-  last 3 days, -1 if older than 3 weeks, and +1 for companies on `[job_alerts] watchlist`,
-  with full scores ahead of preliminary at equal rank. Jobs you've applied to (company +
-  role in Applications) and dismissed jobs are skipped. Each card shows the score
-  breakdown, why, the project to lead with and missing skills. One notification a day:
-  "N new jobs scored 7+".
-- **Digest**: the latest digest, grouped by category, with one-line summaries.
-- **Sensitive**: counts by sender only.
-- **Settings**: the classifier, allowed outbound hosts, accounts and sender tiers (read-only).
-
-**As an app:** run `mailwarden launcher` once and drag `~/Applications/mailwarden.app`
-to the Dock. Clicking it opens the dashboard in its own window (macOS WebKit, not a
-browser). It uses the background dashboard if it's running, otherwise it serves one
-while the window is open. "Open in Gmail" and job links open in your default browser.
-There is only ever one window: notification clicks (`mailwarden://` links) and later
-launches bring the open window to the front at the right entry. The first launch may
-ask for Keychain access for "mailwarden-python"; choose **Always Allow**.
-
-The dashboard only listens on 127.0.0.1 and has no external assets or JavaScript.
-Signing in uses a one-time link (valid 10 minutes). After that a cookie keeps you
-signed in for 90 days. If you're signed out, run `mailwarden open`.
-
-## Notifications
-
-Job mail that needs action (an assessment, interview or offer, or an action for a
-company you're tracking or a priority sender) triggers a desktop notification
-showing only the company, stage and deadline. Clicking it opens the entry on the dashboard.
-
-- **macOS**: after `mailwarden launcher`, notifications are posted by the mailwarden
-  app itself (its name and logo), and clicking one opens the entry in the app window.
-  No extra tools needed; `mailwarden notify-test` sends a test notification. Without
-  the app, mailwarden uses `terminal-notifier` if installed, else `osascript` (macOS
-  attributes those to Script Editor, so a click opens Script Editor).
-- **Linux / Windows**: uses `desktop-notifier`.
-- Configure under `[notifications]` in `config.toml`, or set `enabled = false`.
-
-## Digest
-
-The scheduled digest runs at `[digest] times` (default 08:00 and 18:00) and covers
-the mail since the previous digest. To also write a Markdown copy, set
-`[digest] markdown_dir`. It's plaintext, created mode 600.
-
-## Scheduling
-
-```sh
-.venv/bin/mailwarden schedule          # writes files to <home>/schedule/<platform>/ and prints install commands
-```
-
-- **macOS**: launchd agents that sync every 10 minutes, build the digest at your
-  digest times, and keep the dashboard running. They use `StartCalendarInterval`,
-  so a run missed while the laptop sleeps happens on wake (cron would skip it).
-- **Linux**: systemd user timers with `Persistent=true`.
-- **Windows**: Task Scheduler XML with "run as soon as possible after a missed start".
-
-Logs go to `<home>/logs/` (mode 600).
-
-## Job-matching profile
-
-Job alerts are ranked against a profile built **locally** from your own files. They
-live in the private mailwarden home, never in the repo:
-
-```sh
-.venv/bin/mailwarden profile init     # creates <home>/profile/ and profile/projects/ (mode 700)
-# put your CV (PDF) in <home>/profile/, one Markdown file per project in profile/projects/
-chmod 600 <home>/profile/*.pdf <home>/profile/projects/*.md
-.venv/bin/mailwarden profile build --dry-run   # preview the diff
-.venv/bin/mailwarden profile build             # write <home>/profile.yaml (previous kept as .bak)
-```
-
-`profile.yaml` holds weighted skills, experience years, seniority, target/avoid roles,
-locations and your projects. Edit it by hand. A rebuild only replaces the generated
-blocks (`skills`, `experience_years`, `projects`); every other line is kept exactly as
-you wrote it, comments and formatting included. Hand sections:
-
-- `skill_overrides: {skill: weight}`: replace auto weights and add undetected skills
-  (the scorer uses auto weights overridden by these).
-- `extra_project_skills: {project name: [skills]}`: merged into that project's skills
-  on every rebuild (`build` warns if a name matches no project file).
-- `education`, `experience_summary`, `highlights`: free text used by the fit scorer.
-- `target_roles` / `avoid_roles`: entries may list alternatives with `/`, e.g.
-  `sde / sde-1 / sde i` (case-insensitive, whole words). Only the project files count as project evidence; the
-CV's Projects section is ignored. The file never contains contact details: `build`
-refuses to write it if it would include an email, phone number, link or your name,
-because it's later given to the LLM for fit scoring.
-
-## Tuning sender rules
-
-`sender_rules.yaml` (in the mailwarden home) has three tiers:
-
-- **priority**: job mail (ATS and assessment platforms are pre-seeded).
-- **sensitive**: banks, UPI/payment apps, cards, brokers, tax/government,
-  account-security senders. Never sent to any LLM.
-- **ignore**: senders you never want processed; only counted.
-- **job_alert**: job-board alerts and matches (LinkedIn job alerts, Indeed,
-  Naukri, foundit, Internshala). Labelled by rule, never notify, digest only.
-
-A recruiting subdomain of a sensitive company (e.g. `recruitment.americanexpress.com`)
-counts as priority. Job mail that the gate holds back is still surfaced, but only
-as "Company · stage · needs your attention", with no subject or content, and it
-never goes to the LLM.
-
-Domains match their subdomains too; an exact address beats a domain rule.
-Workflow:
-
-```sh
-mailwarden dry-run --last 100 --summary     # overview: what was held back and why
-mailwarden dry-run --last 30                # per-message detail incl. redacted LLM text
-mailwarden promote talent@somefintech.com priority   # a recruiter at a sensitive domain
-mailwarden promote offers.somestore.com ignore
-```
-
-Independently of sender tiers, the **sensitivity gate** inspects the sender name,
-subject and body locally and holds back anything that looks like an OTP,
-verification code, password reset, login alert, bank/UPI/card transaction,
-statement, KYC, PAN, Aadhaar or tax mail. Promoting a sender never bypasses this
-content check.
+- **Keychain asks for your password for "mailwarden-python" (macOS).** The app runs
+  its own copy of Python, so macOS asks once for each stored secret. Enter your Mac
+  login password and choose **Always Allow**.
+- **The window stays white on launch.** The app is waiting for a Keychain prompt to be
+  answered.
+- **Clicking a notification opens Script Editor.** The app isn't installed. Run
+  `mailwarden launcher`. `mailwarden doctor` shows which notifier is in use.
+- **"Google rejected the stored grant".** The refresh token expired (the consent
+  screen is in *Testing*) or was revoked. Run `add-account` again, and see
+  "Seven-day sign-ins" above.
+- **Scoring is slow or stops at a rate limit.** Groq's free tier allows about three
+  scorings a minute. Unfinished jobs are picked up on the next sync.
 
 ## Development
 
 ```sh
-make test     # pytest
-make lock     # regenerate hash-pinned lockfiles after changing pyproject.toml
+make test     # pytest, including the mandatory zero-LLM-calls test for sensitive mail
+make lock     # regenerate the hash-pinned lockfiles after changing pyproject.toml
+make audit    # pip-audit on the lockfile, plus bandit on the code
 ```
+
+`scripts/make_icon.sh` rebuilds the app icon from `mailwarden/assets/logo-source.png`.
