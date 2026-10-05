@@ -4,7 +4,13 @@ import time
 
 import pytest
 
+import datetime as _dt
+
+from mailwarden.core.expiry import expired_reason
 from mailwarden.core.job_alerts import parse_job_anchors, parse_view_job_blocks
+from mailwarden.core.models import StoredJob
+from mailwarden.core.prefilter import internship_hint, is_stipend
+from mailwarden.core.ranking import role_family
 from mailwarden.core.recruiting import looks_like_job_alert, recruiting_markers, sender_label
 from mailwarden.core.redact import redact_text, strip_footer
 from mailwarden.core.sensitivity_gate import scan_text
@@ -37,7 +43,18 @@ FUNCTIONS = {
     "sender_label": lambda t: sender_label(t[:500], "a@b.com"),
     "scrub": scrub,
     "html": lambda t: (_html_or_refused(t), html_links(t)),
+    "closed_jd": lambda t: expired_reason(_job_with_jd(t), now=_NOW, after_days=0),
+    "stipend": is_stipend,
+    "internship_hint": lambda t: internship_hint(t, t),
+    "role_family": role_family,
 }
+
+_NOW = _dt.datetime(2026, 10, 5, tzinfo=_dt.UTC)
+
+
+def _job_with_jd(text):
+    return StoredJob(id=1, user_id="local", title="x", company=None, location=None, link=None, sender="s",
+                     account="a", message_id="m", received_at=_NOW, jd_status="ok", jd_text=text)
 
 
 def _html_or_refused(t):

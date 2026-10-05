@@ -3,6 +3,8 @@
 - fetch_auto_jds: for candidate jobs hosted on Greenhouse/Lever/Ashby, fetch the JD via
   their public job-board APIs (cached 7 days, paced, capped per run).
 - score_jobs: preliminary/full fit scores for candidates, only when inputs changed.
+- Expired jobs (core.expiry) are neither fetched nor scored, so the LLM budget goes to
+  current ones.
 - JobActions: what the dashboard buttons do (fetch one JD, fetch top N, paste a JD),
   each followed by rescoring that job.
 
@@ -19,9 +21,10 @@ from dataclasses import dataclass, field
 
 from mailwarden.core import fit
 from mailwarden.core.classify.base import BackendUnavailable, LLMBackend
+from mailwarden.core.expiry import expired_reason
 from mailwarden.core.jd import JDResult, acquire, from_paste, plan
 from mailwarden.core.models import StoredJob
-from mailwarden.core.prefilter import prefilter
+from mailwarden.core.prefilter import prefilter_job
 from mailwarden.storage.base import Repository
 
 log = logging.getLogger(__name__)
@@ -33,7 +36,7 @@ GetPage = Callable[[str], tuple[int, str]]
 
 
 def is_candidate(job: StoredJob, profile: dict) -> bool:
-    return not prefilter(job.title, job.location, profile, jd_text=job.jd_text).excluded
+    return not prefilter_job(job, profile).excluded
 
 
 def _jd_fresh(job: StoredJob, now: dt.datetime) -> bool:
@@ -49,7 +52,8 @@ class JDStats:
 
 
 def fetch_auto_jds(repo: Repository, user_id: str, profile: dict, *, get_json: GetJson, limit: int,
-                   now: dt.datetime, pause: float = 1.5, sleep: Callable[[float], None] = time.sleep) -> JDStats:
+                   now: dt.datetime, pause: float = 1.5, sleep: Callable[[float], None] = time.sleep,
+                   expire_after_days: int = 0) -> JDStats:
     stats = JDStats()
     board_cache: dict[str, tuple[int, object]] = {}
 
@@ -63,7 +67,9 @@ def fetch_auto_jds(repo: Repository, user_id: str, profile: dict, *, get_json: G
     for job in repo.list_jobs(user_id):
         if stats.tried >= limit:
             break
-        if job.jd_source == "paste" or _jd_fresh(job, now) or not is_candidate(job, profile):
+        if job.jd_source == "paste" or job.jd_status == "closed" or _jd_fresh(job, now):
+            continue
+        if not is_candidate(job, profile) or expired_reason(job, now=now, after_days=expire_after_days):
             continue
         p = plan(job.link)
         if not p.automatic:
@@ -99,8 +105,10 @@ class ScoreStats:
 
 
 def score_jobs(repo: Repository, user_id: str, llm: LLMBackend, profile: dict, effective_skills: dict[str, float],
-               *, limit: int, only_ids: set[int] | None = None) -> ScoreStats:
+               *, limit: int, only_ids: set[int] | None = None, now: dt.datetime | None = None,
+               expire_after_days: int = 0) -> ScoreStats:
     stats = ScoreStats()
+    now = now or dt.datetime.now(dt.UTC)
     profile_p = fit.profile_payload(profile, effective_skills)
     jobs = [j for j in repo.list_jobs(user_id) if only_ids is None or j.id in only_ids]
     # Unscored first, then those whose inputs changed; newest first within each.
@@ -108,7 +116,8 @@ def score_jobs(repo: Repository, user_id: str, llm: LLMBackend, profile: dict, e
     for job in jobs:
         if stats.scored >= limit:
             break
-        if only_ids is None and not is_candidate(job, profile):
+        if only_ids is None and (not is_candidate(job, profile)
+                                 or expired_reason(job, now=now, after_days=expire_after_days)):
             continue
         job_p = fit.job_payload(job.title, job.company, job.location, job.details,
                                 job.jd_text if job.jd_status == "ok" else None)

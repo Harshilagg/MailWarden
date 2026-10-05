@@ -3,7 +3,8 @@
 {% block content %}
 <h1>Job alerts <span class="count">{{ counts.all }}</span></h1>
 <p class="lead">Jobs from your job-alert emails, with duplicates across sites merged.
-{% if has_profile %}Candidates pass your profile's prefilter. Scores only order the list: nothing is hidden, and filtered jobs stay under All with the reason.
+{% if has_profile %}Candidates pass your profile's prefilter. Scores only order the list: nothing is deleted. Filtered jobs stay under Filtered and All with the reason,
+and jobs that have gone stale{% if expire_days %} (not in any alert for {{ expire_days }} days, or the posting is closed){% else %} (the posting is closed){% endif %} move to Expired.
 A <em>preliminary</em> score comes from the alert alone (at most 7); a <em>full</em> score uses the job description.
 {% else %}Build your profile (<code>mailwarden profile build</code>) to filter and score jobs.{% endif %}</p>
 <p class="filters">
@@ -11,6 +12,7 @@ A <em>preliminary</em> score comes from the alert alone (at most 7); a <em>full<
   <a href="/jobs?view=candidates&sort={{ sort }}"{% if view == "candidates" %} aria-current="page"{% endif %}>Candidates ({{ counts.candidates }})</a>
   <a href="/jobs?view=all&sort={{ sort }}"{% if view == "all" %} aria-current="page"{% endif %}>All ({{ counts.all }})</a>
   <a href="/jobs?view=filtered&sort={{ sort }}"{% if view == "filtered" %} aria-current="page"{% endif %}>Filtered ({{ counts.filtered }})</a>
+  <a href="/jobs?view=expired&sort={{ sort }}"{% if view == "expired" %} aria-current="page"{% endif %}>Expired ({{ counts.expired }})</a>
   <span class="meta">Sort:</span>
   <a href="/jobs?view={{ view }}&sort=score"{% if sort == "score" %} aria-current="page"{% endif %}>Best match</a>
   <a href="/jobs?view={{ view }}&sort=newest"{% if sort == "newest" %} aria-current="page"{% endif %}>Newest</a>
@@ -28,13 +30,13 @@ A <em>preliminary</em> score comes from the alert alone (at most 7); a <em>full<
   {% for name, n in source_chips %}<a href="/jobs?{{ qs }}{% if type %}&type={{ type|urlencode }}{% endif %}&source={{ name|urlencode }}"{% if source == name %} aria-current="page"{% endif %}>{{ name }} ({{ n }})</a>{% endfor %}
 </p>
 {% endif %}
-{% if actions and view != "filtered" %}
+{% if actions and view not in ("filtered", "expired") %}
 <form method="post" action="/jobs/fetch-top" class="inline">
   <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="view" value="{{ view }}"><input type="hidden" name="sort" value="{{ sort }}">
   <button class="secondary">Fetch JDs for top 10</button>
 </form>
 {% endif %}
-{% if not rows %}<p class="empty">{% if view == "filtered" %}Nothing is filtered out.{% elif view == "candidates" and counts.all %}Every job is filtered out: see All.{% else %}No jobs yet. They appear as job-alert emails are processed.{% endif %}</p>{% endif %}
+{% if not rows %}<p class="empty">{% if view == "filtered" %}Nothing is filtered out.{% elif view == "expired" %}Nothing has expired.{% elif view == "candidates" and counts.all %}Every job is filtered out: see All.{% else %}No jobs yet. They appear as job-alert emails are processed.{% endif %}</p>{% endif %}
 <ul class="jobs">
 {% for r in rows %}{% set j = r.job %}
   <li class="job{% if r.match %} match{% endif %}" id="job-{{ j.id }}">
@@ -45,11 +47,13 @@ A <em>preliminary</em> score comes from the alert alone (at most 7); a <em>full<
       {% if j.best_project %}<span class="meta">Lead with: {{ j.best_project }}</span>{% endif %}
       {% if j.missing_skills %}<span class="meta">Missing: {{ j.missing_skills|join(", ") }}</span>{% endif %}
       <span class="meta">via {{ j.source_name or j.sender }} · {{ j.received_at|ago }}{% if j.also_on %} · also on: {{ j.also_on|join(", ") }}{% endif %}</span>
+      {% if r.expired %}<span class="meta"><span class="pill">Expired</span> {{ r.expired }}</span>{% endif %}
       {% if r.verdict and r.verdict.excluded %}<span class="meta"><span class="pill">Filtered</span> {{ r.verdict.reasons|join("; ") }}</span>{% endif %}
       {% if j.jd_status == "ok" %}<span class="meta">Job description: {% if j.jd_source == "paste" %}pasted{% else %}fetched ({{ j.jd_source }}){% endif %}</span>
+      {% elif j.jd_status == "closed" %}<span class="meta">Posting closed: {{ j.jd_reason }}</span>
       {% elif j.jd_status == "unavailable" %}<span class="meta">Job description unavailable: {{ j.jd_reason }}</span>
       {% elif r.why_not %}<span class="meta">{{ r.why_not }}</span>{% endif %}
-      {% if actions and j.jd_status != "ok" %}
+      {% if actions and j.jd_status not in ("ok", "closed") %}
       <details><summary>Paste JD</summary>
         <form method="post" action="/jobs/{{ j.id }}/paste-jd">
           <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="view" value="{{ view }}"><input type="hidden" name="sort" value="{{ sort }}">

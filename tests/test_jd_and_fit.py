@@ -101,7 +101,8 @@ def test_hidden_text_in_jd_is_dropped():
 
 def test_acquire_reports_reasons():
     p = jd.plan("https://boards.greenhouse.io/acme/jobs/1")
-    assert "job not found" in jd.acquire(p, get_json=lambda u: (404, None), get_page=None).reason
+    gone = jd.acquire(p, get_json=lambda u: (404, None), get_page=None)
+    assert gone.status == "closed" and "posting was removed (HTTP 404)" in gone.reason
     assert "blocked the request (HTTP 403)" in jd.acquire(p, get_json=lambda u: (403, None), get_page=None).reason
     ok = jd.acquire(p, get_json=lambda u: (200, {"content": JD_TEXT}), get_page=None)
     assert ok.status == "ok" and ok.source == "api:greenhouse" and "https://" not in ok.text

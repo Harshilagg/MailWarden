@@ -213,11 +213,13 @@ class StoredJob(BaseModel):
     received_at: dt.datetime
     dismissed: bool = False
     details: str | None = None
+    #: The latest time any alert showed this job (None: only the first sighting is known).
+    last_seen_at: dt.datetime | None = None
     source_type: str | None = None
     source_name: str | None = None
     #: Other sources the same job was seen on (names), in order.
     also_on: tuple[str, ...] = ()
-    # job description: status None (not tried) | "ok" | "unavailable"
+    # job description: status None (not tried) | "ok" | "unavailable" | "closed" (posting removed)
     jd_status: str | None = None
     jd_reason: str | None = None
     jd_source: str | None = None  # "api:greenhouse", "fetch:<host>", "paste"

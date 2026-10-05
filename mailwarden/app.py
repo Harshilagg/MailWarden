@@ -168,6 +168,9 @@ class App:
             job_actions=self.job_actions(),
             watchlist=self.settings.job_alerts.watchlist,
             apply_today_count=self.settings.job_alerts.apply_today_count,
+            apply_today_days=self.settings.job_alerts.apply_today_days,
+            max_family_share=self.settings.job_alerts.max_family_share,
+            expire_after_days=self.settings.job_alerts.expire_after_days,
         )
         return create_app(deps)
 

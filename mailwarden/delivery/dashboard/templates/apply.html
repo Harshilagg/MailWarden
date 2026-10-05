@@ -2,17 +2,20 @@
 {% block title %}Apply today · mailwarden{% endblock %}
 {% block content %}
 <h1>Apply today</h1>
-<p class="lead">Your top {{ n }} jobs by rank: fit score, +0.5 if seen in the last 3 days, -1 if older than 3 weeks,
-+1 for watchlist companies{% if watchlist %} ({{ watchlist|join(", ") }}){% endif %}. Full scores come first at equal rank.
-Jobs you've applied to (company + role in Applications) and dismissed jobs are skipped. Everything else is still in <a href="/jobs?view=all">Job alerts → All</a>.</p>
+<p class="lead">Your daily shortlist: the top {{ n }} jobs{% if days %} first seen in the last {{ days }} day{{ "s" if days != 1 }}{% endif %}, by rank
+(fit score, +0.5 if seen in the last 3 days, -1 if older than 3 weeks, +1 for watchlist companies{% if watchlist %}: {{ watchlist|join(", ") }}{% endif %}).
+Full scores come first at equal rank.{% if family_pct %} No single role family (Go, Java, full stack/web ...) takes more than about {{ family_pct }}% of the list
+unless there aren't enough other jobs.{% endif %} Jobs you've applied to, dismissed jobs and expired jobs are skipped.
+Everything else is still in <a href="/jobs?view=all">Job alerts → All</a>.</p>
 <p class="filters"><a href="/apply" aria-current="page">Apply today</a> <a href="/jobs">Job alerts</a></p>
 {% if not has_profile %}<p class="empty">Build your profile (<code>mailwarden profile build</code>) to score and rank jobs.</p>
 {% elif not picks %}<p class="empty">No scored jobs yet. Scores fill in on each sync.</p>{% endif %}
+{% if picks %}<p class="meta">{{ picks|length }} job{{ "s" if picks|length != 1 }}{% if picks|length < n %}: that's every scored candidate in the window{% endif %}.</p>{% endif %}
 {% for p in picks %}{% set j = p.job %}
 <article class="card" id="job-{{ j.id }}">
   <div class="card-head">
     <h3>{{ j.title }}</h3>
-    <span class="pill">{{ "%.1f"|format(p.rank.rank) }}</span>
+    <span>{% if p.family %}<span class="pill">{{ p.family }}</span> {% endif %}<span class="pill">{{ "%.1f"|format(p.rank.rank) }}</span></span>
   </div>
   <p class="meta">{{ j.company or "Company not listed" }}{% if j.location %} · {{ j.location }}{% endif %}{% if j.details %} · {{ j.details }}{% endif %}</p>
   <p class="meta">{{ p.rank.parts|join(" · ") }}</p>

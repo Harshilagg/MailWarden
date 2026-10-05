@@ -191,7 +191,7 @@ Reload (⌘R) to see new items. The background sync runs every 10 minutes.
 | **Urgent** | Job items that need action, by deadline. Held-back job mail shows the company, the stage and a friendly reason ("Contains a verification code"), never the subject. Items are pinned: only **Done** removes them, even if they are reclassified later. Every item has an **Open in Gmail** link. |
 | **Applications** | Companies by stage (applied, assessment, interview, offer, rejection), with each application's history. |
 | **Job alerts** | Every job from your job-alert emails (see the next table). |
-| **Apply today** | The top jobs by rank. Jobs you dismissed, filtered out or already applied to are skipped. |
+| **Apply today** | A daily shortlist: the top jobs first seen in the last few days, by rank, with no single role family taking over. Jobs you dismissed, filtered out, already applied to, or that have expired are skipped. |
 | **Digest** | The latest digest. Newsletters and job alerts are collapsed, and sensitive mail appears only as counts by sender. |
 | **Sensitive** | Counts by sender only. |
 | **Settings** | Read-only: the classifier, the allowed outbound hosts, accounts and sender tiers. |
@@ -200,7 +200,7 @@ The **Job alerts** view has these controls:
 
 | Control | What it does |
 | --- | --- |
-| Tabs | **Candidates** (jobs that pass the prefilter), **All**, and **Filtered** (with the reason) |
+| Tabs | **Candidates** (current jobs that pass the prefilter), **All**, **Filtered** (with the reason), and **Expired** (stale or closed postings, with the reason) |
 | Sort | **Best match** or **Newest** |
 | Chips | Filter by source type and by source |
 | Each card | Fit score (*preliminary* or *full*), why, the project to lead with, missing skills, job-description status |
@@ -259,7 +259,20 @@ Before scoring, a local prefilter marks jobs that are clearly not for you:
 - your `avoid_roles`
 - locations outside your list, unless the job is remote
 
+If `avoid_roles` includes `intern / internship`, listings whose title doesn't say so
+still count as internships when the link is an Internshala internship page, the
+listing says "internship", or it gives a stipend ("Unpaid", up to ₹40,000 a month).
+
 Filtered jobs are never deleted. They stay under **All**, with the reason.
+
+### Expired jobs
+
+A job expires when no job-alert email has shown it for `expire_after_days` (default 14)
+days, or when its posting is closed: a Greenhouse, Lever or Ashby fetch finds it removed,
+or its description says it is no longer accepting applications. Job alerts don't carry
+posting dates, so "last seen in an alert" is the main signal; a job that keeps being
+advertised stays current. Expired jobs move to the **Expired** tab. They are never
+deleted, and they are no longer fetched, scored or offered in Apply today.
 
 ### Fit scores
 
@@ -297,10 +310,19 @@ A job's rank is its fit score, adjusted as follows:
 | First seen more than 3 weeks ago | -1 |
 | Company on `[job_alerts] watchlist` | +1 |
 
-At equal rank, full scores come before preliminary ones. **Apply today** shows the
-top `apply_today_count` jobs (default 8). It skips jobs you dismissed, jobs filtered
-out, and jobs whose company and role are already in your Applications. You get one
-notification a day: "N new jobs scored 7+".
+At equal rank, full scores come before preliminary ones. **Apply today** is a daily
+shortlist:
+
+- It shows the top `apply_today_count` jobs (default 8) first seen in the last
+  `apply_today_days` days (default 3).
+- No role family (Go, Java, Python, full stack/web, AI/ML, mobile, DevOps/cloud, data,
+  .NET/PHP) takes more than `max_family_share` of it (default 25%), unless there
+  aren't enough other jobs. Generic titles such as "Software Engineer" or "SDE 1" are
+  never capped. Each card shows its family.
+- It skips jobs you dismissed, jobs filtered out, expired jobs, and jobs whose company
+  and role are already in your Applications.
+
+You get one notification a day: "N new jobs scored 7+".
 
 ### Sources and duplicates
 
@@ -407,6 +429,9 @@ the keyring. These are the settings you're most likely to change:
 | `[digest] markdown_dir` | off | Optional plaintext Markdown copy of the digest |
 | `[job_alerts] watchlist` | `[]` | Companies whose jobs get +1 rank |
 | `[job_alerts] apply_today_count` | 8 | Jobs in Apply today |
+| `[job_alerts] apply_today_days` | 3 | Apply today picks from jobs first seen in this many days (0 = any age) |
+| `[job_alerts] max_family_share` | 0.25 | Largest share of Apply today from one role family (0 = no cap) |
+| `[job_alerts] expire_after_days` | 14 | Days without an alert before a job expires (0 = only closed postings expire) |
 | `[job_alerts] jd_auto_fetch` | true | Automatic fetches from Greenhouse, Lever and Ashby APIs |
 | `[job_alerts] jd_button_fetch` | false | Fetch buttons on the Job alerts page |
 | `[job_alerts] max_scores_per_run` | 40 | Jobs scored per sync |

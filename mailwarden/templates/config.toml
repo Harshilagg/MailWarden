@@ -70,6 +70,14 @@ daily_notification = true
 watchlist = []
 # How many jobs "Apply today" shows.
 apply_today_count = 8
+# "Apply today" picks only jobs first seen in the last N days: a daily shortlist (0 = any age).
+apply_today_days = 3
+# At most this share of "Apply today" from one role family (Go, Java, Python, full stack/web, AI/ML ...).
+# Generic titles (Software Engineer, SDE) are never capped. 0 = no cap.
+max_family_share = 0.25
+# A job expires when no alert has shown it for this many days, or its posting is gone (moves to the
+# Expired tab; never deleted). 0 = never by age.
+expire_after_days = 14
 # Fetch job descriptions automatically for candidates on Greenhouse, Lever or Ashby (public APIs).
 jd_auto_fetch = true
 # "Fetch job description" buttons (allowlisted hiring systems only). Opt-in: set true to enable.

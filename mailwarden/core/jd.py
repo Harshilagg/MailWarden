@@ -61,7 +61,7 @@ _JD_WORDS = re.compile(r"responsibilit|requirement|qualification|experience|what
 
 @dataclass(frozen=True)
 class JDResult:
-    status: str  # "ok" | "unavailable"
+    status: str  # "ok" | "unavailable" | "closed" (the hiring system says the posting is gone)
     text: str | None = None
     source: str | None = None
     reason: str | None = None
@@ -73,6 +73,10 @@ class JDResult:
     @classmethod
     def unavailable(cls, reason: str) -> JDResult:
         return cls("unavailable", None, None, reason)
+
+    @classmethod
+    def closed(cls, reason: str) -> JDResult:
+        return cls("closed", None, None, reason)
 
 
 def normalise_jd(text: str) -> str:
@@ -178,6 +182,10 @@ def from_lever(data: dict) -> str:
     return "\n".join(p for p in parts if p)
 
 
+def on_ashby_board(board: dict, job_id: str) -> bool:
+    return any(str(job.get("id")) == job_id for job in board.get("jobs") or [])
+
+
 def from_ashby(board: dict, job_id: str) -> str:
     for job in board.get("jobs") or []:
         if str(job.get("id")) == job_id:
@@ -234,8 +242,6 @@ def from_paste(text: str) -> JDResult:
 
 
 def http_reason(status: int, site: str) -> str:
-    if status in (404, 410):
-        return f"{site}: job not found (it may have closed)"
     if status in (401, 403, 429, 999):
         return f"{site} blocked the request (HTTP {status}): open in browser, then paste the JD"
     return f"{site} returned HTTP {status}: open in browser, then paste the JD"
@@ -250,11 +256,17 @@ def acquire(p: Plan, *, get_json: Callable[[str], tuple[int, object]],
             "smartrecruiters": "SmartRecruiters"}.get(p.kind, urlsplit(p.url).hostname or "site")
     if p.kind == "page":
         status, page = get_page(p.url)
+        if status in (404, 410):
+            return JDResult.closed(f"{site}: the posting was removed (HTTP {status})")
         if status != 200:
             return JDResult.unavailable(http_reason(status, site))
         return result_from_text(from_page(page), f"fetch:{site}",
                                 empty_reason=f"{site}: no job description found on the page; paste it instead")
     status, data = get_json(p.url)
+    if status in (404, 410):
+        return JDResult.closed(f"{site}: the posting was removed (HTTP {status})")
+    if p.kind == "ashby" and status == 200 and isinstance(data, dict) and not on_ashby_board(data, p.key or ""):
+        return JDResult.closed("Ashby: the job is no longer on the company's job board")
     if status != 200 or not isinstance(data, dict):
         return JDResult.unavailable(http_reason(status, site) if status != 200 else f"{site}: unexpected reply")
     text = {

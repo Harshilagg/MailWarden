@@ -524,7 +524,8 @@ class SQLCipherRepository(Repository):
 
     _JOB_SELECT = ("SELECT id, title, company, location, link, sender, account, message_id, received_at, dismissed_at, "
                    "listing_details, jd_status, jd_reason, jd_source, jd_text, jd_fetched_at, score, score_level, score_json, "
-                   "score_hash, source_type, source_name FROM job_postings")
+                   "score_hash, source_type, source_name, (SELECT max(s.seen_at) FROM job_sightings s "
+                   "WHERE s.user_id = job_postings.user_id AND s.job_id = job_postings.id) FROM job_postings")
 
     def _row_to_job(self, user_id: str, r: tuple) -> StoredJob:
         detail = json.loads(r[18]) if r[18] else {}
@@ -537,6 +538,7 @@ class SQLCipherRepository(Repository):
             evidence=tuple((e["project"], tuple(e.get("skills", ()))) for e in detail.get("evidence", ())),
             best_project=detail.get("best_project"), why=detail.get("why"), score_hash=r[19],
             source_type=r[20], source_name=r[21],
+            last_seen_at=dt.datetime.fromisoformat(r[22]) if r[22] else None,
             also_on=tuple(n for n in self._sightings(user_id, r[0]) if n and n != r[21]),
         )
 
@@ -547,7 +549,7 @@ class SQLCipherRepository(Repository):
         return [r[0] for r in rows]
 
     def list_jobs(self, user_id: str, *, include_dismissed: bool = False, since: dt.datetime | None = None,
-                  limit: int = 500) -> list[StoredJob]:
+                  limit: int | None = None) -> list[StoredJob]:
         sql = self._JOB_SELECT + " WHERE user_id = ?"
         args: list[object] = [user_id]
         if not include_dismissed:
@@ -555,8 +557,10 @@ class SQLCipherRepository(Repository):
         if since is not None:
             sql += " AND received_at >= ?"
             args.append(_iso(since))
-        sql += " ORDER BY received_at DESC, id DESC LIMIT ?"
-        args.append(limit)
+        sql += " ORDER BY received_at DESC, id DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            args.append(limit)
         return [self._row_to_job(user_id, r) for r in self._db.execute(sql, args).fetchall()]
 
     def get_job(self, user_id: str, job_id: int) -> StoredJob | None:

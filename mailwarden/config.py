@@ -108,6 +108,14 @@ class JobAlertSettings(_Section):
     watchlist: list[str] = []
     # How many jobs the "Apply today" view shows.
     apply_today_count: int = Field(default=8, ge=1, le=50)
+    # "Apply today" picks only jobs first seen in the last N days, so it is a daily shortlist (0 = any age).
+    apply_today_days: int = Field(default=3, ge=0, le=60)
+    # At most this share of "Apply today" from one role family (Go, Java, Python, full stack/web, AI/ML ...).
+    # Generic titles (Software Engineer, SDE, Backend Developer) are never capped. 0 = no cap.
+    max_family_share: float = Field(default=0.25, ge=0, le=1)
+    # A job expires when no alert has shown it for this many days, or its posting is gone. Expired jobs
+    # move to the Expired tab (never deleted) and are no longer fetched, scored or offered. 0 = never by age.
+    expire_after_days: int = Field(default=14, ge=0, le=365)
     # Automatically fetch job descriptions for candidates hosted on Greenhouse, Lever or Ashby,
     # through their public job-board APIs (fixed hosts, no cookies, cached 7 days).
     jd_auto_fetch: bool = True

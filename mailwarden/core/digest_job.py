@@ -35,6 +35,7 @@ def maybe_notify_top_jobs(
     now: dt.datetime,
     profile: dict | None,
     notifier: Notifier | None,
+    expire_after_days: int = 0,
 ) -> int:
     """At most once per local day: '<N> new jobs scored 7+'. Returns N (0 if not sent)."""
     from mailwarden.core.ranking import AppliedIndex, new_strong_jobs
@@ -45,7 +46,8 @@ def maybe_notify_top_jobs(
     last = repo.get_state(user_id, NOTICE_AT_KEY)
     since = dt.datetime.fromisoformat(last) if last else now - DEFAULT_WINDOW
     applied = AppliedIndex.from_applications(repo.list_applications(user_id))
-    n = new_strong_jobs(repo.list_jobs(user_id), profile, since=since, applied=applied)
+    n = new_strong_jobs(repo.list_jobs(user_id), profile, since=since, applied=applied, now=now,
+                        expire_after_days=expire_after_days)
     if n == 0:
         return 0
     if notifier is not None:

@@ -14,12 +14,18 @@ Rules, from the title (and the job description, when one is available):
    "support" and "non-engineering" are understood as categories);
 5. a known location outside profile.locations, unless the job is remote and
    remote_ok is true.
+
+For (4), a listing counts as an internship even when its title doesn't say so
+("Web Development" on Internshala) if its link is an Internshala internship page (also
+inside a click-tracking link), its details say "internship", or its details give a
+stipend ("Unpaid", "₹ 10,000 - 15,000 /month", up to ₹40,000 a month).
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from urllib.parse import unquote
 
 from mailwarden.core.text import clean
 
@@ -70,6 +76,12 @@ _CATEGORIES: dict[str, re.Pattern[str]] = {
         r"civil\s+(?:site\s+)?engineer|site\s+engineer|mechanical\s+engineer|electrical\s+engineer)\b",
         re.IGNORECASE),
 }
+_UNPAID = re.compile(r"\b(?:unpaid|stipend)\b", re.IGNORECASE)
+_PER_MONTH = re.compile(r"/\s*(?:month|mo)\b|\bper\s+month\b|\bp\.?\s?m\.?(?=\s|$)", re.IGNORECASE)
+_AMOUNT = re.compile(r"(?<![\d,])\d{1,3}(?:,\d{2,3})*(?![\d,])")
+STIPEND_MAX = 40_000  # a monthly figure at or below this is an internship stipend, not a salary
+_INTERNSHIP_WORD = re.compile(r"\binternships?\b", re.IGNORECASE)
+_INTERNSHIP_LINK = re.compile(r"internshala\.com/internships?/", re.IGNORECASE)
 _REMOTE = re.compile(r"\b(remote|work\s+from\s+home|wfh|anywhere|distributed)\b", re.IGNORECASE)
 _COUNTRY_ONLY = re.compile(r"^\s*(?:pan[\s-]*)?india\s*$|^\s*multiple\s+locations?\s*$", re.IGNORECASE)
 _LOCATION_ALIASES = {
@@ -138,6 +150,31 @@ def _avoid_reason(title: str, entry: str) -> str | None:
     return None
 
 
+def is_stipend(details: str | None) -> bool:
+    """Listing details that describe an internship stipend rather than a salary."""
+    text = clean(details or "")[:300]
+    if not text:
+        return False
+    if _UNPAID.search(text):
+        return True
+    if not _PER_MONTH.search(text):
+        return False
+    amounts = [int(a.replace(",", "")) for a in _AMOUNT.findall(text)]
+    return bool(amounts) and max(amounts) <= STIPEND_MAX
+
+
+def internship_hint(details: str | None, link: str | None) -> str | None:
+    """Why a listing is an internship though its title doesn't say so, or None."""
+    if link and _INTERNSHIP_LINK.search(unquote(unquote(link[:2000]))):
+        return "Internshala internship"
+    text = clean(details or "")[:300]
+    if _INTERNSHIP_WORD.search(text):
+        return "listing says internship"
+    if is_stipend(text):
+        return f"stipend: {text[:40]}"
+    return None
+
+
 def _location_ok(location: str, wanted: list[str], remote_ok: bool) -> bool:
     loc = clean(location).lower()
     if not loc.strip() or _COUNTRY_ONLY.match(loc):
@@ -154,7 +191,8 @@ def _location_ok(location: str, wanted: list[str], remote_ok: bool) -> bool:
     return False
 
 
-def prefilter(title: str, location: str | None, profile: dict, jd_text: str | None = None) -> FilterResult:
+def prefilter(title: str, location: str | None, profile: dict, jd_text: str | None = None,
+              details: str | None = None, link: str | None = None) -> FilterResult:
     title = clean(title or "")
     jd = clean(jd_text or "")
     reasons: list[str] = []
@@ -171,9 +209,13 @@ def prefilter(title: str, location: str | None, profile: dict, jd_text: str | No
     if years is not None and years > 2:
         reasons.append(f"needs {years}+ years")
 
+    hint = internship_hint(details, link)
     for entry in profile.get("avoid_roles") or []:
         if reason := _avoid_reason(title, entry):
             reasons.append(reason)
+            break
+        if hint and (reason := _avoid_reason(f"{title} internship", entry)):
+            reasons.append(f"{reason} ({hint})")
             break
 
     wanted = [str(x) for x in (profile.get("locations") or [])]
@@ -182,3 +224,8 @@ def prefilter(title: str, location: str | None, profile: dict, jd_text: str | No
         reasons.append(f"location ({clean(location)[:40]})")
 
     return FilterResult(tuple(reasons))
+
+
+def prefilter_job(job, profile: dict) -> FilterResult:
+    """``prefilter`` for a stored job (title, location, listing details and JD)."""
+    return prefilter(job.title, job.location, profile, jd_text=job.jd_text, details=job.details, link=job.link)

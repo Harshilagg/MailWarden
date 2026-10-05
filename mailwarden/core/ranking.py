@@ -5,19 +5,25 @@ rank = fit score
        - 1.0 if first seen more than 21 days ago
        + 1.0 if the company is on [job_alerts] watchlist
 
-"Apply today" = the top N candidates by rank (full scores ahead of preliminary at equal
-rank), skipping jobs that are dismissed, filtered by the prefilter, not scored yet, or
-whose company + role is already in your Applications.
+"Apply today" = a daily shortlist: the top N candidates by rank (full scores ahead of
+preliminary at equal rank), skipping jobs that are dismissed, filtered by the prefilter,
+expired, not scored yet, or whose company + role is already in your Applications.
+Optionally only jobs first seen in the last ``new_within_days`` days, and at most
+``max_family_share`` of the list from one role family (Go, Java, full stack/web ...), so
+one stack can't take every slot. Generic titles (Software Engineer, SDE) have no family.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import math
+import re
 from dataclasses import dataclass, field
 
 from mailwarden.core.applications import company_key, role_key
+from mailwarden.core.expiry import expired_reason
 from mailwarden.core.models import Application, StoredJob
-from mailwarden.core.prefilter import prefilter
+from mailwarden.core.prefilter import prefilter_job
 
 FRESH = dt.timedelta(days=3)
 STALE = dt.timedelta(days=21)
@@ -98,30 +104,79 @@ def sort_key(job: StoredJob, info: RankInfo) -> tuple:
             -job.received_at.timestamp())
 
 
+# Role families, checked in order (first match wins). Titles matching none are generic.
+_FAMILIES: tuple[tuple[str, re.Pattern[str]], ...] = tuple((name, re.compile(rx, re.IGNORECASE)) for name, rx in (
+    ("Go", r"\bgolang\b|\bgo\s?-?lang\b|\bgo\s+(?:developer|engineer|backend)\b|\(\s*go\s*\)"),
+    ("AI/ML", r"\b(?:ai|ml|llm|genai|gen\s+ai|agentic|nlp)\b|machine\s+learning|artificial\s+intelligence|"
+              r"data\s+scien"),
+    ("Mobile", r"\b(?:android|ios|flutter|mobile|kotlin|swift)\b|react\s+native"),
+    ("Full stack/web", r"\bfull[\s-]?stack\b|\b(?:mern|mean|react(?:\.?js)?|node(?:\.?js)?|next\.?js|angular|vue|"
+                       r"javascript|typescript)\b|\bweb\s+develop|\bfront[\s-]?end\b"),
+    ("Java", r"\bjava\b|\bspring\b"),
+    ("Python", r"\b(?:python|django|flask|fastapi)\b"),
+    ("DevOps/cloud", r"\b(?:devops|sre|cloud|platform|infrastructure|kubernetes|k8s)\b|site\s+reliability"),
+    ("Data", r"\bdata\s+engineer|\b(?:etl|spark|big\s+data)\b"),
+    (".NET/PHP", r"\.net\b|\bc#|\bphp\b"),
+))
+
+
+def role_family(title: str) -> str | None:
+    for name, rx in _FAMILIES:
+        if rx.search(title[:300]):
+            return name
+    return None
+
+
 def apply_today(jobs: list[StoredJob], profile: dict | None, *, n: int, now: dt.datetime, watchlist: list[str],
-                applied: AppliedIndex) -> list[tuple[StoredJob, RankInfo]]:
+                applied: AppliedIndex, expire_after_days: int = 0, new_within_days: int = 0,
+                max_family_share: float = 0.0) -> list[tuple[StoredJob, RankInfo]]:
     picks = []
     for job in jobs:
         if job.dismissed or job.score is None:
             continue
-        if profile is not None and prefilter(job.title, job.location, profile, jd_text=job.jd_text).excluded:
+        if new_within_days > 0 and now - job.received_at > dt.timedelta(days=new_within_days):
+            continue
+        if expired_reason(job, now=now, after_days=expire_after_days):
+            continue
+        if profile is not None and prefilter_job(job, profile).excluded:
             continue
         info = rank_job(job, now=now, watchlist=watchlist, applied=applied)
         if info.applied:
             continue
         picks.append((job, info))
     picks.sort(key=lambda p: sort_key(*p))
-    return picks[:n]
+    if max_family_share <= 0:
+        return picks[:n]
+    cap = max(2, math.ceil(n * max_family_share))
+    chosen: list[tuple[StoredJob, RankInfo]] = []
+    held: list[tuple[StoredJob, RankInfo]] = []
+    per_family: dict[str, int] = {}
+    for pick in picks:
+        if len(chosen) == n:
+            break
+        family = role_family(pick[0].title)
+        if family is not None and per_family.get(family, 0) >= cap:
+            held.append(pick)  # used only if there aren't enough other jobs
+            continue
+        if family is not None:
+            per_family[family] = per_family.get(family, 0) + 1
+        chosen.append(pick)
+    chosen += held[: n - len(chosen)]
+    chosen.sort(key=lambda p: sort_key(*p))
+    return chosen
 
 
 def new_strong_jobs(jobs: list[StoredJob], profile: dict | None, *, since: dt.datetime,
-                    applied: AppliedIndex, threshold: float = NOTIFY_THRESHOLD) -> int:
-    """Jobs first seen since ``since`` that scored ``threshold``+ (candidates you haven't applied to)."""
+                    applied: AppliedIndex, threshold: float = NOTIFY_THRESHOLD, now: dt.datetime | None = None,
+                    expire_after_days: int = 0) -> int:
+    """Jobs first seen since ``since`` that scored ``threshold``+ (current candidates you haven't applied to)."""
     count = 0
     for job in jobs:
         if job.dismissed or job.score is None or job.score < threshold or job.received_at < since:
             continue
-        if profile is not None and prefilter(job.title, job.location, profile, jd_text=job.jd_text).excluded:
+        if expired_reason(job, now=now or dt.datetime.now(dt.UTC), after_days=expire_after_days):
+            continue
+        if profile is not None and prefilter_job(job, profile).excluded:
             continue
         if applied.contains(job.company, job.title):
             continue

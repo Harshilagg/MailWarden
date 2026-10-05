@@ -332,7 +332,7 @@ def cmd_digest(args: argparse.Namespace) -> int:
         matched = 0
         if ja.daily_notification:
             matched = maybe_notify_top_jobs(repo, app.user_id, now=now, profile=app.profile(),
-                                            notifier=app.notifier())
+                                            notifier=app.notifier(), expire_after_days=ja.expire_after_days)
     finally:
         repo.close()
     if matched:
@@ -453,14 +453,14 @@ def cmd_profile(args: argparse.Namespace) -> int:
 def _jobs_prefilter(app: App, profile: dict, show: str) -> int:
     from collections import Counter
 
-    from mailwarden.core.prefilter import prefilter
+    from mailwarden.core.prefilter import prefilter_job
 
     repo = app.repository()
     try:
         jobs = repo.list_jobs(app.user_id)
     finally:
         repo.close()
-    verdicts = [(j, prefilter(j.title, j.location, profile, jd_text=j.jd_text)) for j in jobs]
+    verdicts = [(j, prefilter_job(j, profile)) for j in jobs]
     kept = [j for j, v in verdicts if not v.excluded]
     reasons = Counter(r.split(" (")[0] for _, v in verdicts for r in v.reasons)
     print(f"{len(jobs)} jobs: {len(kept)} candidates, {len(jobs) - len(kept)} filtered (none are deleted)")
@@ -502,14 +502,15 @@ def jobs_maintenance(app: App, profile: dict, *, fetch: bool = True, score: bool
         if fetch and ja.jd_auto_fetch:
             st = fetch_auto_jds(repo, app.user_id, profile, get_json=lambda url: fetch_json(app.session, url),
                                 limit=fetch_limit if fetch_limit is not None else ja.max_jd_fetches_per_run,
-                                now=dt.datetime.now(dt.UTC))
+                                now=dt.datetime.now(dt.UTC), expire_after_days=ja.expire_after_days)
             if verbose:
                 print(f"job descriptions (Greenhouse/Lever/Ashby APIs): {st.fetched} fetched, "
                       f"{st.unavailable} unavailable" + (f" {st.reasons}" if st.reasons else ""))
         if score:
             llm = app.llm_backend()
             st2 = score_jobs(repo, app.user_id, llm, profile, prof.effective_skills(profile),
-                             limit=score_limit if score_limit is not None else ja.max_scores_per_run)
+                             limit=score_limit if score_limit is not None else ja.max_scores_per_run,
+                             expire_after_days=ja.expire_after_days)
             if verbose:
                 print(f"fit scores: {st2.scored} new ({st2.full} full, {st2.preliminary} preliminary), "
                       f"{st2.unchanged} unchanged, {st2.failed} failed"

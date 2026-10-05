@@ -72,7 +72,13 @@ class DashboardDeps:
     job_actions: object | None = None
     watchlist: list[str] = field(default_factory=list)
     apply_today_count: int = 8
+    apply_today_days: int = 0
+    max_family_share: float = 0.0
+    expire_after_days: int = 0
     now: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.UTC)
+
+
+_JOB_VIEWS = ("candidates", "all", "filtered", "expired")
 
 
 def _stage_label(stage: Stage | str | None) -> str:
@@ -240,8 +246,9 @@ def create_app(deps: DashboardDeps) -> FastAPI:
                       sensitive_total=sum(d.sensitive_by_sender.values()))
 
     def _job_rows(profile: dict | None):
+        from mailwarden.core.expiry import expired_reason
         from mailwarden.core.jd import plan
-        from mailwarden.core.prefilter import prefilter
+        from mailwarden.core.prefilter import prefilter_job
         from mailwarden.profile import match_role
 
         from mailwarden.core.ranking import AppliedIndex, rank_job
@@ -258,14 +265,16 @@ def create_app(deps: DashboardDeps) -> FastAPI:
         button = bool(actions and getattr(actions, "button_fetch_enabled", False))
         rows = []
         for j in stored:
-            verdict = prefilter(j.title, j.location, profile, jd_text=j.jd_text) if profile else None
+            verdict = prefilter_job(j, profile) if profile else None
             if targets:
                 highlight = match_role(j.title, targets) is not None
             else:
                 highlight = matches_filters(j.title, j.location, deps.job_keywords, deps.job_locations)
             p = plan(j.link)
-            can_fetch = bool(actions) and j.jd_status != "ok" and (p.automatic or (button and p.kind != "none"))
-            rows.append({"job": j, "match": highlight and not (verdict and verdict.excluded),
+            expired = expired_reason(j, now=now, after_days=deps.expire_after_days)
+            can_fetch = (bool(actions) and j.jd_status not in ("ok", "closed") and not expired
+                         and (p.automatic or (button and p.kind != "none")))
+            rows.append({"job": j, "expired": expired, "match": highlight and not (verdict and verdict.excluded),
                          "link": safe_link(j.link), "verdict": verdict, "can_fetch": can_fetch,
                          "why_not": p.why_not if p.kind == "none" else None,
                          "rank": rank_job(j, now=now, watchlist=deps.watchlist, applied=applied)})
@@ -278,7 +287,7 @@ def create_app(deps: DashboardDeps) -> FastAPI:
 
         if match:  # old links (/jobs?match=1) land on the candidates view
             view = "candidates"
-        if view not in ("candidates", "all", "filtered"):
+        if view not in _JOB_VIEWS:
             view = "candidates"
         sort = sort if sort in ("score", "newest") else "score"
         try:
@@ -286,12 +295,12 @@ def create_app(deps: DashboardDeps) -> FastAPI:
         except Exception:
             profile = None
         rows, targets = _job_rows(profile)
-        excluded = [r for r in rows if r["verdict"] and r["verdict"].excluded]
-        counts = {"candidates": len(rows) - len(excluded), "all": len(rows), "filtered": len(excluded)}
-        if view == "candidates":
-            rows = [r for r in rows if not (r["verdict"] and r["verdict"].excluded)]
-        elif view == "filtered":
-            rows = excluded
+        expired = [r for r in rows if r["expired"]]
+        current = [r for r in rows if not r["expired"]]
+        excluded = [r for r in current if r["verdict"] and r["verdict"].excluded]
+        candidates = [r for r in current if not (r["verdict"] and r["verdict"].excluded)]
+        counts = {"candidates": len(candidates), "all": len(rows), "filtered": len(excluded), "expired": len(expired)}
+        rows = {"candidates": candidates, "filtered": excluded, "expired": expired, "all": rows}[view]
         # Source chips: only sources that have produced jobs in this view, with counts.
         type_counts: dict[str, int] = {}
         source_counts: dict[str, int] = {}
@@ -317,7 +326,8 @@ def create_app(deps: DashboardDeps) -> FastAPI:
         return render("jobs.html", request, rows=rows, view=view, sort=sort, counts=counts, apply_n=apply_n,
                       type=type, source=source, type_chips=type_chips, source_chips=source_chips,
                       has_profile=profile is not None, targets=targets, keywords=deps.job_keywords,
-                      locations=deps.job_locations, actions=deps.job_actions is not None)
+                      locations=deps.job_locations, actions=deps.job_actions is not None,
+                      expire_days=deps.expire_after_days)
 
     def _apply_picks(profile: dict | None):
         from mailwarden.core.ranking import AppliedIndex, apply_today
@@ -329,7 +339,8 @@ def create_app(deps: DashboardDeps) -> FastAPI:
         finally:
             repo.close()
         return apply_today(jobs, profile, n=deps.apply_today_count, now=deps.now(), watchlist=deps.watchlist,
-                           applied=applied)
+                           applied=applied, expire_after_days=deps.expire_after_days,
+                           new_within_days=deps.apply_today_days, max_family_share=deps.max_family_share)
 
     @app.get("/apply")
     def apply_view(request: Request) -> Response:
@@ -337,15 +348,19 @@ def create_app(deps: DashboardDeps) -> FastAPI:
             profile = deps.profile_loader()
         except Exception:
             profile = None
-        picks = [{"job": j, "rank": info, "link": safe_link(j.link)} for j, info in _apply_picks(profile)]
+        from mailwarden.core.ranking import role_family
+
+        picks = [{"job": j, "rank": info, "link": safe_link(j.link), "family": role_family(j.title)}
+                 for j, info in _apply_picks(profile)]
         return render("apply.html", request, picks=picks, n=deps.apply_today_count, has_profile=profile is not None,
-                      watchlist=deps.watchlist)
+                      watchlist=deps.watchlist, days=deps.apply_today_days,
+                      family_pct=round(deps.max_family_share * 100))
 
     def _back(form: dict[str, str], job_id: int | None = None) -> RedirectResponse:
         if form.get("view") == "apply":
             return RedirectResponse("/apply", status_code=303)
         view = form.get("view", "candidates")
-        view = view if view in ("candidates", "all", "filtered") else "candidates"
+        view = view if view in _JOB_VIEWS else "candidates"
         sort = form.get("sort", "score")
         sort = sort if sort in ("score", "newest") else "score"
         anchor = f"#job-{job_id}" if job_id else ""
@@ -380,7 +395,8 @@ def create_app(deps: DashboardDeps) -> FastAPI:
         if deps.job_actions is not None:
             profile = deps.profile_loader()
             rows, _ = _job_rows(profile)
-            rows = [r for r in rows if r["can_fetch"] and not (r["verdict"] and r["verdict"].excluded)]
+            rows = [r for r in rows if r["can_fetch"] and not r["expired"]
+                    and not (r["verdict"] and r["verdict"].excluded)]
             rows.sort(key=lambda r: (-(r["job"].score or 0), -r["job"].received_at.timestamp()))
             deps.job_actions.fetch_top([r["job"].id for r in rows[:10]])
         return _back(form)
