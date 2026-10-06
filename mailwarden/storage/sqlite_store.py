@@ -225,7 +225,7 @@ class SQLCipherRepository(Repository):
         ("listing_details", "TEXT"), ("jd_status", "TEXT"), ("jd_reason", "TEXT"), ("jd_source", "TEXT"),
         ("jd_text", "TEXT"), ("jd_fetched_at", "TEXT"), ("score", "REAL"), ("score_level", "TEXT"),
         ("score_json", "TEXT"), ("score_hash", "TEXT"), ("scored_at", "TEXT"),
-        ("source_type", "TEXT"), ("source_name", "TEXT"),
+        ("source_type", "TEXT"), ("source_name", "TEXT"), ("experience_check", "TEXT"),
     )
 
     def _migrate_jobs(self) -> None:
@@ -537,7 +537,7 @@ class SQLCipherRepository(Repository):
     _JOB_SELECT = ("SELECT id, title, company, location, link, sender, account, message_id, received_at, dismissed_at, "
                    "listing_details, jd_status, jd_reason, jd_source, jd_text, jd_fetched_at, score, score_level, score_json, "
                    "score_hash, source_type, source_name, (SELECT max(s.seen_at) FROM job_sightings s "
-                   "WHERE s.user_id = job_postings.user_id AND s.job_id = job_postings.id) FROM job_postings")
+                   "WHERE s.user_id = job_postings.user_id AND s.job_id = job_postings.id), experience_check FROM job_postings")
 
     def _row_to_job(self, user_id: str, r: tuple) -> StoredJob:
         detail = json.loads(r[18]) if r[18] else {}
@@ -550,7 +550,7 @@ class SQLCipherRepository(Repository):
             evidence=tuple((e["project"], tuple(e.get("skills", ()))) for e in detail.get("evidence", ())),
             best_project=detail.get("best_project"), why=detail.get("why"), score_hash=r[19],
             source_type=r[20], source_name=r[21],
-            last_seen_at=dt.datetime.fromisoformat(r[22]) if r[22] else None,
+            last_seen_at=dt.datetime.fromisoformat(r[22]) if r[22] else None, experience_check=r[23],
             also_on=tuple(n for n in self._sightings(user_id, r[0]) if n and n != r[21]),
         )
 
@@ -593,6 +593,13 @@ class SQLCipherRepository(Repository):
             "WHERE user_id = ? AND id = ?",
             (score, level, json.dumps(detail), input_hash, _now(), user_id, job_id),
         )
+
+    def set_experience_check(self, user_id: str, job_id: int, value: str | None) -> bool:
+        if value not in ("fresher", "senior", None):
+            raise ValueError("experience check must be 'fresher', 'senior' or None")
+        cur = self._db.execute("UPDATE job_postings SET experience_check = ? WHERE user_id = ? AND id = ?",
+                               (value, user_id, job_id))
+        return cur.rowcount > 0
 
     def dismiss_job(self, user_id: str, job_id: int) -> bool:
         cur = self._db.execute("UPDATE job_postings SET dismissed_at = ? WHERE user_id = ? AND id = ?",

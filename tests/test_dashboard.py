@@ -249,12 +249,15 @@ def test_jobs_page_without_profile_highlights_keywords(env):
     assert "Build your profile" in html
 
 
+from tests.policy_helpers import POLICY  # noqa: E402
+
 PROFILE = {"target_roles": ["backend / platform"], "avoid_roles": ["non-engineering"],
            "locations": ["Bengaluru", "Remote"], "remote_ok": True}
 
 
 def test_jobs_page_prefilter_tabs_never_hide_jobs(env):
     env.profile_loader = lambda: PROFILE
+    env.policy_loader = lambda: POLICY
     _jobs(env)
     c = client(env)
     cand = c.get("/jobs").text
@@ -263,7 +266,7 @@ def test_jobs_page_prefilter_tabs_never_hide_jobs(env):
     assert 'class="job match"' in cand  # target role highlighted
     everything = c.get("/jobs?view=all").text
     assert "Backend Engineer" in everything and "Marketing Intern" in everything
-    assert "non-engineering role" in everything and "location (Mumbai)" in everything
+    assert "excluded role: internship (title has &#39;Intern&#39;)" in everything and "location (Mumbai)" in everything
     filt = c.get("/jobs?view=filtered").text
     assert "Marketing Intern" in filt and "Backend Engineer" not in filt
     assert c.get("/jobs?match=1").text.count("Backend Engineer") == 1  # old notification links still work
@@ -384,6 +387,7 @@ class _Actions:
 
 def test_jd_buttons_require_csrf_and_accept_long_pastes(env):
     env.profile_loader = lambda: PROFILE
+    env.policy_loader = lambda: POLICY
     env.job_actions = _Actions()
     _jobs(env)
     c = client(env)
@@ -410,6 +414,7 @@ def test_jd_buttons_require_csrf_and_accept_long_pastes(env):
 
 def test_scores_show_level_and_details(env):
     env.profile_loader = lambda: PROFILE
+    env.policy_loader = lambda: POLICY
     _jobs(env)
     repo = env.repo_factory()
     job_id = next(j.id for j in repo.list_jobs("local") if j.title == "Backend Engineer")
@@ -424,6 +429,7 @@ def test_scores_show_level_and_details(env):
 
 def test_apply_today_view(env):
     env.profile_loader = lambda: PROFILE
+    env.policy_loader = lambda: POLICY
     env.watchlist = ["Zeta"]
     _jobs(env)
     repo = env.repo_factory()
@@ -434,7 +440,15 @@ def test_apply_today_view(env):
     repo.close()
     c = client(env)
     html = c.get("/apply").text
-    assert "Backend Engineer" in html and "Marketing Intern" not in html  # filtered job not picked
+    # The alert doesn't say what experience it wants: it waits for a quick check, not in Apply today.
+    picks, check = html.split('id="check"')
+    assert "Backend Engineer" not in picks and "Backend Engineer" in check and "Marketing Intern" not in html
+    assert "Needs a quick check (1)" in c.get("/jobs").text
+    r = c.post(f"/jobs/{job_id}/experience", content=f"csrf={_csrf(env)}&view=apply&value=fresher",
+               headers={"content-type": "application/x-www-form-urlencoded"})
+    assert r.status_code == 303 and r.headers["location"] == "/apply"
+    html = c.get("/apply").text
+    assert 'id="check"' not in html and "you checked it: fresher OK" in html
     assert "score 6.0 (preliminary) · fresh +0.5" in html  # received just now
     assert "Lead with: <strong>Observable Job Queue</strong>" in html and "Paste or fetch the job description" in html
     assert "Apply today (1)" in c.get("/jobs").text
@@ -445,8 +459,43 @@ def test_apply_today_view(env):
     assert "Backend Engineer" not in c.get("/jobs?view=all").text  # you dismissed it: gone from both views
 
 
+def test_experience_check_needs_csrf_and_a_known_value(env):
+    env.profile_loader = lambda: PROFILE
+    env.policy_loader = lambda: POLICY
+    _jobs(env)
+    repo = env.repo_factory()
+    job_id = next(j.id for j in repo.list_jobs("local") if j.title == "Backend Engineer")
+    repo.close()
+    c = client(env)
+    form = {"content-type": "application/x-www-form-urlencoded"}
+    assert c.post(f"/jobs/{job_id}/experience", content="value=fresher", headers=form).status_code == 403
+    c.post(f"/jobs/{job_id}/experience", content=f"csrf={_csrf(env)}&value=lol", headers=form)
+    repo = env.repo_factory()
+    assert repo.get_job("local", job_id).experience_check is None  # unknown values are ignored
+    repo.close()
+    c.post(f"/jobs/{job_id}/experience", content=f"csrf={_csrf(env)}&value=senior", headers=form)
+    html = c.get("/jobs?view=filtered").text
+    assert "Backend Engineer" in html and "too senior: you checked it: too senior" in html
+    c.post(f"/jobs/{job_id}/experience", content=f"csrf={_csrf(env)}&value=clear", headers=form)
+    assert "Needs a quick check (1)" in c.get("/jobs").text
+
+
+def test_invalid_policy_is_shown_not_hidden(env):
+    from mailwarden.core.policy import PolicyError
+
+    def broken():
+        raise PolicyError("matching.yaml is invalid: experience.pass_max_min_yrs: Extra inputs are not permitted")
+
+    env.policy_loader = broken
+    _jobs(env)
+    html = client(env).get("/jobs").text
+    assert "matching.yaml has a problem" in html and "pass_max_min_yrs" in html
+    assert "Marketing Intern" in html  # nothing filtered rather than wrongly filtered
+
+
 def test_already_applied_label(env):
     env.profile_loader = lambda: PROFILE
+    env.policy_loader = lambda: POLICY
     _jobs(env)
     repo = env.repo_factory()
     repo.upsert_application(Application(user_id="local", company="Zeta", role="Backend Engineer",
@@ -458,6 +507,7 @@ def test_already_applied_label(env):
 
 def test_source_chips_and_also_on(env):
     env.profile_loader = lambda: PROFILE
+    env.policy_loader = lambda: POLICY
     repo = env.repo_factory()
     for mid, src, stype, title in [("m1", "LinkedIn", "job_board", "Backend Engineer"),
                                    ("m2", "Naukri", "job_board", "Backend Engineer"),

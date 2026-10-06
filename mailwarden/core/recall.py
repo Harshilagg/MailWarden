@@ -21,8 +21,9 @@ from dataclasses import dataclass, field
 from mailwarden.core.expiry import expired_reason
 from mailwarden.core.fit import CS_DEGREE, PRELIMINARY_CAP
 from mailwarden.core.models import StoredJob
+from mailwarden.core.policy import MatchingPolicy
 from mailwarden.core.prefilter import prefilter_job
-from mailwarden.core.ranking import AppliedIndex, RankInfo, apply_today, rank_job, role_family
+from mailwarden.core.ranking import AppliedIndex, RankInfo, apply_today, is_stretch, rank_job, role_family
 
 LOW_WEIGHT = 0.5  # a matched skill below this weight is suggested for a raise
 # Share of a 15-job sample: filtered, low-ranked candidates, and everything else.
@@ -49,7 +50,7 @@ class Context:
     """Everything Apply today used, so a job's exclusion can be replayed exactly."""
 
     jobs: list[StoredJob]
-    profile: dict | None
+    policy: MatchingPolicy | None
     effective_skills: dict[str, float]
     now: dt.datetime
     n: int
@@ -64,8 +65,8 @@ class Context:
     def __post_init__(self) -> None:
         kw = dict(n=self.n, now=self.now, watchlist=self.watchlist, applied=self.applied,
                   expire_after_days=self.expire_after_days, new_within_days=self.window_days)
-        self.picks = apply_today(self.jobs, self.profile, max_family_share=self.family_share, **kw)
-        self.uncapped_ids = {j.id for j, _ in apply_today(self.jobs, self.profile, max_family_share=0.0, **kw)}
+        self.picks = apply_today(self.jobs, self.policy, max_family_share=self.family_share, **kw)
+        self.uncapped_ids = {j.id for j, _ in apply_today(self.jobs, self.policy, max_family_share=0.0, **kw)}
 
     @property
     def pick_ids(self) -> set[int]:
@@ -85,7 +86,7 @@ class Context:
 # --- sampling --------------------------------------------------------------------------------
 
 def stratum(job: StoredJob, ctx: Context) -> str:
-    if ctx.profile is not None and prefilter_job(job, ctx.profile).excluded:
+    if ctx.policy is not None and prefilter_job(job, ctx.policy).excluded:
         return "filtered"
     if (job.score is not None and not expired_reason(job, now=ctx.now, after_days=ctx.expire_after_days)
             and not _outside_window(job, ctx)):
@@ -120,33 +121,33 @@ def _outside_window(job: StoredJob, ctx: Context) -> bool:
     return ctx.window_days > 0 and ctx.now - job.received_at > dt.timedelta(days=ctx.window_days)
 
 
-def _filter_finding(reason: str) -> Finding:
-    """A prefilter reason, with the profile/rule change that would let the job through."""
-    if m := re.match(r"seniority \((.+)\)$", reason):
-        word = m.group(1).lower()
-        return Finding("filter", f"seniority rule: the title contains '{word}'",
-                       f"rule change: stop treating '{word}' in a title as too senior", f"seniority:{word}")
-    if m := re.match(r"level above new grad \((.+)\)$", reason):
-        return Finding("filter", f"level rule: '{m.group(1)}' in the title is above new grad",
-                       "paste the job description: the level rule is waived when it says 0-2 years or fresher",
-                       "level")
-    if m := re.match(r"needs (\d+)\+ years$", reason):
-        n = int(m.group(1))
-        return Finding("filter", f"experience rule: asks for {n}+ years (limit is 2)",
-                       f"rule change: allow roles asking up to {n} years", f"years:{n}")
-    if m := re.match(r"avoid role: (.+?)(?: \((.+)\))?$", reason):
-        entry, hint = m.group(1), m.group(2)
-        why = f" ({hint})" if hint else ""
-        return Finding("filter", f"avoid_roles entry '{entry}' matched{why}",
-                       f"profile.yaml: remove or narrow '{entry}' in avoid_roles", f"avoid:{entry}")
+def _filter_finding(reason: str, policy: MatchingPolicy | None) -> Finding:
+    """A prefilter reason, with the matching.yaml change that would let the job through."""
+    if m := re.match(r"excluded role: (.+?)(?: \((.+)\))?$", reason):
+        term, why = m.group(1), f" ({m.group(2)})" if m.group(2) else ""
+        return Finding("filter", f"hard exclusion: role type '{term}'{why}",
+                       f"matching.yaml: remove '{term}' from hard_exclusions.role_types", f"role:{term}")
+    if m := re.match(r"excluded condition: (.+)$", reason):
+        return Finding("filter", f"hard exclusion: condition '{m.group(1)}'",
+                       f"matching.yaml: remove '{m.group(1)}' from hard_exclusions.conditions", f"cond:{m.group(1)}")
+    if m := re.match(r"too senior: (.+)$", reason):
+        evidence = m.group(1)
+        if y := re.search(r"says (\d{1,2})", evidence):
+            years = int(y.group(1))
+            now = policy.experience.stretch_min_years if policy else "?"
+            return Finding("filter", f"too senior: {evidence} (stretch allows up to {now})",
+                           f"matching.yaml: raise experience.stretch_min_years to {years} (now {now})",
+                           f"years:{years}")
+        if w := re.search(r"title has '(.+)'", evidence):
+            word = w.group(1)
+            return Finding("filter", f"too senior: the title has '{word}'",
+                           f"matching.yaml: remove '{word}' from experience.senior_signals, or mark the job "
+                           "Fresher OK if the posting asks 0-2 years", f"senior:{word}")
+        return Finding("filter", f"too senior: {evidence}", None, "checked")
     if m := re.match(r"location \((.+)\)$", reason):
         place = m.group(1).split(",")[0].strip()
-        return Finding("filter", f"location rule: '{m.group(1)}' is not in your locations",
-                       f"profile.yaml: add '{place}' to locations", f"location:{place.lower()}")
-    if reason.endswith(" role"):  # security-only / sales / support / non-engineering categories
-        category = "security only" if reason.startswith("security-only") else reason[: -len(" role")]
-        return Finding("filter", f"avoid_roles category '{category}' matched",
-                       f"profile.yaml: remove '{category}' from avoid_roles", f"avoid:{category}")
+        return Finding("filter", f"location: '{m.group(1)}' is not in location.allowed",
+                       f"matching.yaml: add '{place}' to location.allowed", f"location:{place.lower()}")
     return Finding("filter", reason, "review this prefilter rule", f"filter:{reason}")
 
 
@@ -175,8 +176,9 @@ def explain(job: StoredJob, ctx: Context) -> list[Finding]:
     if job.dismissed:
         return [Finding("dismissed", "you dismissed it", None, "dismissed")]
     found: list[Finding] = []
-    if ctx.profile is not None:  # the prefilter decides first: filtered jobs are never scored
-        found += [_filter_finding(r) for r in prefilter_job(job, ctx.profile).reasons]
+    verdict = prefilter_job(job, ctx.policy) if ctx.policy is not None else None
+    if verdict is not None:  # the prefilter decides first: filtered jobs are never scored
+        found += [_filter_finding(r, ctx.policy) for r in verdict.reasons]
     reason = expired_reason(job, now=ctx.now, after_days=ctx.expire_after_days)
     if reason:
         if job.jd_status == "closed" or "closed" in reason:
@@ -193,12 +195,26 @@ def explain(job: StoredJob, ctx: Context) -> list[Finding]:
         found.append(Finding("not_scored", "not scored yet (still in the scoring queue)",
                              "config: raise [job_alerts] max_scores_per_run, or wait for the next syncs",
                              "not_scored"))
-    info = rank_job(job, now=ctx.now, watchlist=ctx.watchlist, applied=ctx.applied)
+    if (verdict is not None and verdict.needs_check and not found
+            and ctx.policy.experience.unknown_policy == "needs_check"):
+        found.append(Finding("needs_check", f"experience level unknown ({verdict.experience.evidence}): it waits "
+                                            "in Needs a quick check, never Apply today, until verified",
+                             "dashboard: mark it Fresher OK after checking the posting (or paste the job "
+                             "description)", "needs_check"))
+    info = rank_job(job, now=ctx.now, watchlist=ctx.watchlist, applied=ctx.applied, policy=ctx.policy)
     if info.applied:
         found.append(Finding("applied", "its company and role are already in your Applications", None, "applied"))
     if found or info.rank is None:
         return found
-    # It was eligible: only the family cap or its rank kept it out.
+    # It was eligible: only the stretch limit, the family cap or its rank kept it out.
+    if is_stretch(job, ctx.policy):
+        limit = ctx.policy.experience.max_stretch_in_apply_today
+        taken = sum(1 for j, _ in ctx.picks if is_stretch(j, ctx.policy))
+        if taken >= limit:
+            return [Finding("stretch_cap", f"stretch limit: {taken} of {limit} stretch slots were already taken "
+                                           f"({verdict.experience.evidence})",
+                            f"matching.yaml: raise experience.max_stretch_in_apply_today (now {limit})",
+                            "stretch_cap")]
     if job.id in ctx.uncapped_ids:
         family = role_family(job.title) or "?"
         return [Finding("family_cap", f"role-family limit: '{family}' already had {ctx.family_cap} of {ctx.n} slots",
@@ -235,7 +251,8 @@ _KIND_LABELS = {
     "filter": "prefilter rule", "expired": "expired", "window": "outside the Apply today window",
     "not_scored": "not scored yet", "applied": "already applied", "family_cap": "role-family limit",
     "rank": "ranked out of the top (below or tied at the cutoff)", "preliminary": "preliminary score (title only)", "cap": "score cap",
-    "skill": "skill weights",
+    "skill": "skill weights", "needs_check": "experience unknown (waiting for a quick check)",
+    "stretch_cap": "stretch limit",
 }
 
 

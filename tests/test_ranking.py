@@ -6,7 +6,10 @@ from mailwarden.core.models import Application, Stage, StoredJob
 from mailwarden.core.ranking import AppliedIndex, apply_today, new_strong_jobs, on_watchlist, rank_job
 
 NOW = dt.datetime(2026, 10, 1, 12, 0, tzinfo=dt.UTC)
-PROFILE = {"avoid_roles": ["sales"], "locations": ["Bengaluru", "Remote", "Delhi NCR"], "remote_ok": True}
+from tests.policy_helpers import policy  # noqa: E402
+
+# Title-only test jobs have no stated experience: "allow" lets them rank (gating is tested elsewhere).
+PROFILE = policy(location={"allowed": ["Bengaluru", "Delhi NCR"]}, experience={"unknown_policy": "allow"})
 
 
 def job(i, title="Backend Engineer", company="Acme", score=7.0, level="full", days=1, location="Bengaluru",

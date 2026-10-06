@@ -33,8 +33,13 @@ def describe(job: StoredJob, ctx: Context, n: int, total: int) -> str:
         f" · via {job.source_name or job.sender}",
         f"  {score}",
     ]
-    if ctx.profile is not None and (verdict := prefilter_job(job, ctx.profile)).excluded:
-        lines.append(f"  filtered: {'; '.join(verdict.reasons)}")
+    if ctx.policy is not None:
+        verdict = prefilter_job(job, ctx.policy)
+        if verdict.excluded:
+            lines.append(f"  filtered: {'; '.join(verdict.reasons)}")
+        elif verdict.experience is not None:
+            lines.append(f"  experience: {verdict.experience.status.replace('_', ' ')} "
+                         f"({verdict.experience.evidence})")
     return "\n".join(lines)
 
 

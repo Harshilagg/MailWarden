@@ -23,7 +23,9 @@ from dataclasses import dataclass, field
 from mailwarden.core.applications import company_key, role_key
 from mailwarden.core.expiry import expired_reason
 from mailwarden.core.models import Application, StoredJob
-from mailwarden.core.prefilter import prefilter_job
+from mailwarden.core.experience import STRETCH
+from mailwarden.core.policy import MatchingPolicy
+from mailwarden.core.prefilter import penalty, prefilter_job
 
 FRESH = dt.timedelta(days=3)
 STALE = dt.timedelta(days=21)
@@ -78,7 +80,8 @@ def on_watchlist(company: str | None, watchlist: list[str]) -> bool:
     return False
 
 
-def rank_job(job: StoredJob, *, now: dt.datetime, watchlist: list[str], applied: AppliedIndex) -> RankInfo:
+def rank_job(job: StoredJob, *, now: dt.datetime, watchlist: list[str], applied: AppliedIndex,
+             policy: MatchingPolicy | None = None) -> RankInfo:
     is_applied = applied.contains(job.company, job.title)
     watched = on_watchlist(job.company, watchlist)
     if job.score is None:
@@ -95,6 +98,9 @@ def rank_job(job: StoredJob, *, now: dt.datetime, watchlist: list[str], applied:
     if watched:
         rank += WATCHLIST_BONUS
         parts.append(f"watchlist +{WATCHLIST_BONUS:g}")
+    if policy is not None and (stacks := penalty(job, policy)) and policy.soft_penalties.rank_penalty:
+        rank -= policy.soft_penalties.rank_penalty
+        parts.append(f"{', '.join(stacks)} stack -{policy.soft_penalties.rank_penalty:g}")
     return RankInfo(round(rank, 2), tuple(parts), is_applied, watched)
 
 
@@ -127,46 +133,97 @@ def role_family(title: str) -> str | None:
     return None
 
 
-def apply_today(jobs: list[StoredJob], profile: dict | None, *, n: int, now: dt.datetime, watchlist: list[str],
-                applied: AppliedIndex, expire_after_days: int = 0, new_within_days: int = 0,
+def apply_ready(job: StoredJob, policy: MatchingPolicy | None) -> bool:
+    """Passes the filter and, under unknown_policy needs_check, has a verified experience level."""
+    if policy is None:
+        return True
+    verdict = prefilter_job(job, policy)
+    if verdict.excluded:
+        return False
+    return not verdict.needs_check or policy.experience.unknown_policy == "allow"
+
+
+def apply_today(jobs: list[StoredJob], policy: MatchingPolicy | None, *, n: int, now: dt.datetime,
+                watchlist: list[str], applied: AppliedIndex, expire_after_days: int = 0, new_within_days: int = 0,
                 max_family_share: float = 0.0) -> list[tuple[StoredJob, RankInfo]]:
     picks = []
-    for job in jobs:
-        if job.dismissed or job.score is None:
+    for job in _current(jobs, now=now, expire_after_days=expire_after_days, new_within_days=new_within_days):
+        if job.score is None or not apply_ready(job, policy):
             continue
-        if new_within_days > 0 and now - job.received_at > dt.timedelta(days=new_within_days):
-            continue
-        if expired_reason(job, now=now, after_days=expire_after_days):
-            continue
-        if profile is not None and prefilter_job(job, profile).excluded:
-            continue
-        info = rank_job(job, now=now, watchlist=watchlist, applied=applied)
+        info = rank_job(job, now=now, watchlist=watchlist, applied=applied, policy=policy)
         if info.applied:
             continue
         picks.append((job, info))
     picks.sort(key=lambda p: sort_key(*p))
-    if max_family_share <= 0:
-        return picks[:n]
-    cap = max(2, math.ceil(n * max_family_share))
+    max_stretch = policy.experience.max_stretch_in_apply_today if policy is not None else None
+    cap = max(2, math.ceil(n * max_family_share)) if max_family_share > 0 else n
     chosen: list[tuple[StoredJob, RankInfo]] = []
     held: list[tuple[StoredJob, RankInfo]] = []
     per_family: dict[str, int] = {}
+    stretch = 0
     for pick in picks:
         if len(chosen) == n:
             break
+        stretchy = max_stretch is not None and is_stretch(pick[0], policy)
+        if stretchy and stretch >= max_stretch:
+            continue  # a hard limit
         family = role_family(pick[0].title)
         if family is not None and per_family.get(family, 0) >= cap:
             held.append(pick)  # used only if there aren't enough other jobs
             continue
         if family is not None:
             per_family[family] = per_family.get(family, 0) + 1
+        stretch += stretchy
         chosen.append(pick)
-    chosen += held[: n - len(chosen)]
+    for pick in held:  # backfill, still within the stretch limit
+        if len(chosen) == n:
+            break
+        stretchy = max_stretch is not None and is_stretch(pick[0], policy)
+        if stretchy and stretch >= max_stretch:
+            continue
+        stretch += stretchy
+        chosen.append(pick)
     chosen.sort(key=lambda p: sort_key(*p))
     return chosen
 
 
-def new_strong_jobs(jobs: list[StoredJob], profile: dict | None, *, since: dt.datetime,
+def is_stretch(job: StoredJob, policy: MatchingPolicy | None) -> bool:
+    if policy is None:
+        return False
+    exp = prefilter_job(job, policy).experience
+    return exp is not None and exp.status == STRETCH
+
+
+def _current(jobs: list[StoredJob], *, now: dt.datetime, expire_after_days: int, new_within_days: int):
+    for job in jobs:
+        if job.dismissed:
+            continue
+        if new_within_days > 0 and now - job.received_at > dt.timedelta(days=new_within_days):
+            continue
+        if expired_reason(job, now=now, after_days=expire_after_days):
+            continue
+        yield job
+
+
+def quick_check_queue(jobs: list[StoredJob], policy: MatchingPolicy | None, *, now: dt.datetime,
+                      watchlist: list[str], applied: AppliedIndex, expire_after_days: int = 0,
+                      new_within_days: int = 0) -> list[tuple[StoredJob, RankInfo]]:
+    """Current jobs that pass the filter but whose experience level is unknown, best first.
+    A quick check ("Fresher OK" / "Too senior") moves them into or out of Apply today."""
+    if policy is None or policy.experience.unknown_policy == "allow":
+        return []
+    out = []
+    for job in _current(jobs, now=now, expire_after_days=expire_after_days, new_within_days=new_within_days):
+        if not prefilter_job(job, policy).needs_check:
+            continue
+        info = rank_job(job, now=now, watchlist=watchlist, applied=applied, policy=policy)
+        if not info.applied:
+            out.append((job, info))
+    out.sort(key=lambda p: sort_key(*p))
+    return out
+
+
+def new_strong_jobs(jobs: list[StoredJob], policy: MatchingPolicy | None, *, since: dt.datetime,
                     applied: AppliedIndex, threshold: float = NOTIFY_THRESHOLD, now: dt.datetime | None = None,
                     expire_after_days: int = 0) -> int:
     """Jobs first seen since ``since`` that scored ``threshold``+ (current candidates you haven't applied to)."""
@@ -176,7 +233,7 @@ def new_strong_jobs(jobs: list[StoredJob], profile: dict | None, *, since: dt.da
             continue
         if expired_reason(job, now=now or dt.datetime.now(dt.UTC), after_days=expire_after_days):
             continue
-        if profile is not None and prefilter_job(job, profile).excluded:
+        if not apply_ready(job, policy):
             continue
         if applied.contains(job.company, job.title):
             continue

@@ -9,7 +9,9 @@ import datetime as _dt
 from mailwarden.core.expiry import expired_reason
 from mailwarden.core.job_alerts import parse_job_anchors, parse_view_job_blocks
 from mailwarden.core.models import StoredJob
-from mailwarden.core.prefilter import internship_hint, is_stipend
+from mailwarden.core.experience import classify
+from mailwarden.core.policy import default_policy
+from mailwarden.core.prefilter import internship_hint, is_stipend, location_ok, prefilter
 from mailwarden.core.ranking import role_family
 from mailwarden.core.recruiting import looks_like_job_alert, recruiting_markers, sender_label
 from mailwarden.core.redact import redact_text, strip_footer
@@ -46,10 +48,16 @@ FUNCTIONS = {
     "closed_jd": lambda t: expired_reason(_job_with_jd(t), now=_NOW, after_days=0),
     "stipend": is_stipend,
     "internship_hint": lambda t: internship_hint(t, t),
+    "experience": lambda t: classify(_POLICY, title=t[:300], details=t[:300], jd_text=t),
+    "policy_prefilter": lambda t: prefilter(_POLICY, title=t[:300], location=t[:200], details=t[:300], jd_text=t,
+                                            link=t[:2000]),
+    "location": lambda t: location_ok(t[:200], ["Bengaluru", "Delhi NCR"], True),
+    "terms": lambda t: (_POLICY.any_stack.find_all(t), _POLICY.senior.find(t)),
     "role_family": role_family,
 }
 
 _NOW = _dt.datetime(2026, 10, 5, tzinfo=_dt.UTC)
+_POLICY = default_policy()
 
 
 def _job_with_jd(text):

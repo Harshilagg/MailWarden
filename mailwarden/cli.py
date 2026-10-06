@@ -332,7 +332,7 @@ def cmd_digest(args: argparse.Namespace) -> int:
         ja = app.settings.job_alerts
         matched = 0
         if ja.daily_notification:
-            matched = maybe_notify_top_jobs(repo, app.user_id, now=now, profile=app.profile(),
+            matched = maybe_notify_top_jobs(repo, app.user_id, now=now, policy=app.matching_policy(),
                                             notifier=app.notifier(), expire_after_days=ja.expire_after_days)
     finally:
         repo.close()
@@ -451,22 +451,27 @@ def cmd_profile(args: argparse.Namespace) -> int:
     return 0
 
 
-def _jobs_prefilter(app: App, profile: dict, show: str) -> int:
+def _jobs_prefilter(app: App, show: str) -> int:
     from collections import Counter
 
     from mailwarden.core.prefilter import prefilter_job
 
+    policy = app.matching_policy()
     repo = app.repository()
     try:
         jobs = repo.list_jobs(app.user_id)
     finally:
         repo.close()
-    verdicts = [(j, prefilter_job(j, profile)) for j in jobs]
+    verdicts = [(j, prefilter_job(j, policy)) for j in jobs]
     kept = [j for j, v in verdicts if not v.excluded]
-    reasons = Counter(r.split(" (")[0] for _, v in verdicts for r in v.reasons)
+    reasons = Counter(re.split(r" \(|: ", r)[0] if not r.startswith("excluded") else r.split(" (")[0]
+                      for _, v in verdicts for r in v.reasons)
     print(f"{len(jobs)} jobs: {len(kept)} candidates, {len(jobs) - len(kept)} filtered (none are deleted)")
     for reason, n in reasons.most_common():
         print(f"  {n:>4}  {reason}")
+    levels = Counter(v.experience.status for _, v in verdicts if not v.excluded and v.experience)
+    print("candidates by experience: " + ", ".join(f"{k} {n}" for k, n in levels.most_common())
+          + (" (unknown = needs a quick check before Apply today)" if levels.get("unknown") else ""))
     if show in ("filtered", "all"):
         print("\nFiltered:")
         for j, v in verdicts:
@@ -489,7 +494,14 @@ def jobs_maintenance(app: App, profile: dict, *, fetch: bool = True, score: bool
     import fcntl
     import os
 
+    from mailwarden.core.policy import PolicyError
+
     ja = app.settings.job_alerts
+    try:
+        policy = app.matching_policy()
+    except PolicyError as e:
+        print(f"job fetching and scoring skipped: {e}", file=sys.stderr)
+        return
     lock_fd = os.open(app.home / "jobs.lock", os.O_CREAT | os.O_RDWR, 0o600)
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -501,7 +513,7 @@ def jobs_maintenance(app: App, profile: dict, *, fetch: bool = True, score: bool
     repo = app.repository()
     try:
         if fetch and ja.jd_auto_fetch:
-            st = fetch_auto_jds(repo, app.user_id, profile, get_json=lambda url: fetch_json(app.session, url),
+            st = fetch_auto_jds(repo, app.user_id, policy, get_json=lambda url: fetch_json(app.session, url),
                                 limit=fetch_limit if fetch_limit is not None else ja.max_jd_fetches_per_run,
                                 now=dt.datetime.now(dt.UTC), expire_after_days=ja.expire_after_days)
             if verbose:
@@ -511,7 +523,7 @@ def jobs_maintenance(app: App, profile: dict, *, fetch: bool = True, score: bool
             llm = app.llm_backend()
             st2 = score_jobs(repo, app.user_id, llm, profile, prof.effective_skills(profile),
                              limit=score_limit if score_limit is not None else ja.max_scores_per_run,
-                             expire_after_days=ja.expire_after_days)
+                             expire_after_days=ja.expire_after_days, policy=policy)
             if verbose:
                 print(f"fit scores: {st2.scored} new ({st2.full} full, {st2.preliminary} preliminary), "
                       f"{st2.unchanged} unchanged, {st2.failed} failed"
@@ -528,7 +540,7 @@ def cmd_jobs(args: argparse.Namespace) -> int:
     if profile is None:
         raise UsageError("no profile.yaml yet: run `mailwarden profile build` first")
     if args.jobs_command == "prefilter":
-        return _jobs_prefilter(app, profile, args.show)
+        return _jobs_prefilter(app, args.show)
     if args.jobs_command == "fetch":
         jobs_maintenance(app, profile, score=False, fetch_limit=args.limit)
         return 0
@@ -566,7 +578,7 @@ def _jobs_audit(app: App, profile: dict, *, count: int, report_only: bool) -> in
     repo = app.repository()
     try:
         if not report_only:
-            ctx = Context(jobs=repo.list_jobs(app.user_id), profile=profile,
+            ctx = Context(jobs=repo.list_jobs(app.user_id), policy=app.matching_policy(),
                           effective_skills=prof.effective_skills(profile), now=now, n=ja.apply_today_count,
                           watchlist=ja.watchlist, applied=AppliedIndex.from_applications(repo.list_applications(app.user_id)),
                           expire_after_days=ja.expire_after_days, window_days=ja.apply_today_days,
@@ -585,8 +597,10 @@ def _matching_status(app: App) -> str:
     from mailwarden.core.policy import PolicyError
     from mailwarden.matching import policy_path
 
+    from mailwarden import matching
+
     try:
-        policy = app.matching_policy()
+        policy = matching.load(app.home)
     except PolicyError as e:
         return f"INVALID: {e}"
     if policy is None:
@@ -627,16 +641,23 @@ def cmd_matching(args: argparse.Namespace) -> int:
     print(f"  {len(e.fresher_signals)} fresher signals, {len(e.senior_signals)} senior signals")
     print(f"hard exclusions: {len(policy.hard_exclusions.role_types)} role types, "
           f"{len(policy.hard_exclusions.conditions)} conditions")
+    loc = policy.location
+    print(f"location: {', '.join(loc.allowed) if loc.allowed else 'no filter'}"
+          f"{' + remote' if loc.remote_ok else ' (remote not allowed)'}")
     print(f"soft penalties: {', '.join(policy.soft_penalties.stacks) or 'none'} "
           f"(-{policy.soft_penalties.rank_penalty:g} rank)")
     print("stack families:")
     for name, fam in policy.stack_families.items():
         evidence = fam.evidence_project or "no evidence project"
         print(f"  {name:<18} {len(fam.keywords):>2} keywords -> {evidence}")
-    print(f"scoring rubric: {len(policy.scoring_rubric)} lines (given to the scorer verbatim)")
+    print(f"scoring rubric: {len(policy.scoring_rubric)} lines")
     if profile is None:
         print("note: no profile.yaml yet, so evidence projects can't be checked")
     warnings = policy.check(projects if profile is not None else None)
+    stale = [k for k in ("avoid_roles", "locations", "remote_ok") if (profile or {}).get(k)]
+    if stale:
+        warnings.append(f"profile.yaml still has {', '.join(stale)}: these no longer filter anything "
+                        "(matching.yaml decides); you can delete them")
     for w in warnings:
         print(f"warning: {w}")
     print("no warnings" if not warnings else f"{len(warnings)} warning(s)")

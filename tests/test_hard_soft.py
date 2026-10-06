@@ -251,11 +251,11 @@ def test_jobs_deduplicated_across_senders_and_daily_notice(tmp_path, secret_stor
     from mailwarden.core.digest_job import maybe_notify_top_jobs
 
     job_id = repo.list_jobs("local")[0].id
-    assert maybe_notify_top_jobs(repo, "local", now=now, profile=None, notifier=N()) == 0  # not scored yet
+    assert maybe_notify_top_jobs(repo, "local", now=now, policy=None, notifier=N()) == 0  # not scored yet
     repo.save_score("local", job_id, score=7.5, level="full", detail={}, input_hash="h")
-    assert maybe_notify_top_jobs(repo, "local", now=now, profile=None, notifier=N()) == 1
+    assert maybe_notify_top_jobs(repo, "local", now=now, policy=None, notifier=N()) == 1
     assert sent == [("1 new job scored 7+", "/apply")]
-    assert maybe_notify_top_jobs(repo, "local", now=now + dt.timedelta(hours=6), profile=None,
+    assert maybe_notify_top_jobs(repo, "local", now=now + dt.timedelta(hours=6), policy=None,
                                  notifier=N()) == 0  # once per day
     assert len(sent) == 1
     repo.close()

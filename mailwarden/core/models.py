@@ -215,6 +215,8 @@ class StoredJob(BaseModel):
     details: str | None = None
     #: The latest time any alert showed this job (None: only the first sighting is known).
     last_seen_at: dt.datetime | None = None
+    #: Your quick check of the experience level on the dashboard: "fresher" | "senior" | None.
+    experience_check: str | None = None
     source_type: str | None = None
     source_name: str | None = None
     #: Other sources the same job was seen on (names), in order.

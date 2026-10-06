@@ -109,10 +109,11 @@ class App:
         return prof.load_existing(self.home)
 
     def matching_policy(self):
-        """matching.yaml (None if not created yet). Raises PolicyError if it is invalid."""
+        """matching.yaml, or the shipped defaults until you create one. Raises PolicyError if it is invalid."""
         from mailwarden import matching
+        from mailwarden.core.policy import default_policy
 
-        return matching.load(self.home)
+        return matching.load(self.home) or default_policy()
 
     def repository(self) -> Repository:
         return SQLCipherRepository.open(self.home / DB_RELATIVE_PATH, self.secrets, self.user_id)
@@ -171,6 +172,7 @@ class App:
             job_keywords=self.settings.job_alerts.target_keywords,
             job_locations=self.settings.job_alerts.target_locations,
             profile_loader=self.profile,
+            policy_loader=self.matching_policy,
             job_actions=self.job_actions(),
             watchlist=self.settings.job_alerts.watchlist,
             apply_today_count=self.settings.job_alerts.apply_today_count,

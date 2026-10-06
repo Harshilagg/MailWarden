@@ -24,6 +24,7 @@ from mailwarden.core.classify.base import BackendUnavailable, LLMBackend
 from mailwarden.core.expiry import expired_reason
 from mailwarden.core.jd import JDResult, acquire, from_paste, plan
 from mailwarden.core.models import StoredJob
+from mailwarden.core.policy import MatchingPolicy
 from mailwarden.core.prefilter import prefilter_job
 from mailwarden.storage.base import Repository
 
@@ -35,8 +36,9 @@ GetJson = Callable[[str], tuple[int, object]]
 GetPage = Callable[[str], tuple[int, str]]
 
 
-def is_candidate(job: StoredJob, profile: dict) -> bool:
-    return not prefilter_job(job, profile).excluded
+def is_candidate(job: StoredJob, policy: MatchingPolicy | None) -> bool:
+    """Passes the prefilter (unknown experience included: its score ranks the quick-check list)."""
+    return policy is None or not prefilter_job(job, policy).excluded
 
 
 def _jd_fresh(job: StoredJob, now: dt.datetime) -> bool:
@@ -51,7 +53,7 @@ class JDStats:
     reasons: dict[str, int] = field(default_factory=dict)
 
 
-def fetch_auto_jds(repo: Repository, user_id: str, profile: dict, *, get_json: GetJson, limit: int,
+def fetch_auto_jds(repo: Repository, user_id: str, policy: MatchingPolicy | None, *, get_json: GetJson, limit: int,
                    now: dt.datetime, pause: float = 1.5, sleep: Callable[[float], None] = time.sleep,
                    expire_after_days: int = 0) -> JDStats:
     stats = JDStats()
@@ -69,7 +71,7 @@ def fetch_auto_jds(repo: Repository, user_id: str, profile: dict, *, get_json: G
             break
         if job.jd_source == "paste" or job.jd_status == "closed" or _jd_fresh(job, now):
             continue
-        if not is_candidate(job, profile) or expired_reason(job, now=now, after_days=expire_after_days):
+        if not is_candidate(job, policy) or expired_reason(job, now=now, after_days=expire_after_days):
             continue
         p = plan(job.link)
         if not p.automatic:
@@ -106,7 +108,7 @@ class ScoreStats:
 
 def score_jobs(repo: Repository, user_id: str, llm: LLMBackend, profile: dict, effective_skills: dict[str, float],
                *, limit: int, only_ids: set[int] | None = None, now: dt.datetime | None = None,
-               expire_after_days: int = 0) -> ScoreStats:
+               expire_after_days: int = 0, policy: MatchingPolicy | None = None) -> ScoreStats:
     stats = ScoreStats()
     now = now or dt.datetime.now(dt.UTC)
     profile_p = fit.profile_payload(profile, effective_skills)
@@ -116,7 +118,7 @@ def score_jobs(repo: Repository, user_id: str, llm: LLMBackend, profile: dict, e
     for job in jobs:
         if stats.scored >= limit:
             break
-        if only_ids is None and (not is_candidate(job, profile)
+        if only_ids is None and (not is_candidate(job, policy)
                                  or expired_reason(job, now=now, after_days=expire_after_days)):
             continue
         job_p = fit.job_payload(job.title, job.company, job.location, job.details,

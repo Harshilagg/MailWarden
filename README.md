@@ -238,11 +238,11 @@ wrote it, comments included. These sections are yours to edit:
   every rebuild. `build` warns if a name matches no project file.
 - `education`, `experience_summary` and `highlights` are free text given to the
   scorer.
-- `target_roles` and `avoid_roles` entries may list alternatives separated by `/`,
-  e.g. `sde / sde-1 / sde i` or `intern / internship`. Matching is case-insensitive,
-  on whole words.
-- `locations` entries may use `/` alternatives too, and `Delhi NCR` covers Gurugram,
-  Noida and Delhi. `remote_ok` accepts remote jobs.
+- `target_roles` entries may list alternatives separated by `/`, e.g.
+  `sde / sde-1 / sde i`. They highlight matching titles on the Job alerts page.
+- Filtering (roles to avoid, locations, experience) lives in `matching.yaml`, not here.
+  `mailwarden matching check` tells you if old `avoid_roles` / `locations` entries are
+  still in `profile.yaml`.
 
 `profile.yaml` is given to the LLM for scoring, so it must never contain contact
 details. `build` refuses to write the file if it would include an email address, a
@@ -266,20 +266,43 @@ appear in two families, and exclusions that would always filter a family.
 
 ### Prefilter
 
-Before scoring, a local prefilter marks jobs that are clearly not for you:
+Before scoring, a local prefilter (driven by `matching.yaml`) filters only jobs you
+can't or won't do. **The stack never filters**; stacks in `soft_penalties` only lower
+the rank (−1 by default).
 
-- seniority words (senior, lead, manager, architect, staff, principal ...)
-- levels above new grad (SDE II, Engineer 3, L5 ...), unless the description says
-  0-2 years
-- "N+ years" with N above 2
-- your `avoid_roles`
-- locations outside your list, unless the job is remote
+- **Hard exclusions:** `role_types` matched as whole words in the title, and
+  `conditions` ("unpaid", "service bond" ...) anywhere in the title, details or job
+  description. Two role types have a built-in meaning:
+  - `internship` also catches "Intern" titles, Internshala internship links,
+    listings that say "internship", and stipends ("Unpaid", up to ₹40,000 a month);
+  - `non-engineering` catches titles with no engineering word and no stack keyword.
+- **Experience:** each job is `verified_fresher`, `stretch`, `too_senior` or
+  `unknown`. Too senior is filtered. The level comes from, in order:
+  1. your quick check;
+  2. years in the title or listing details ("(0-2 yrs)", "Experience: 1-4 yrs");
+  3. required years in the job description, not "preferred" ones or a company's
+     history;
+  4. a senior word in the title ("Senior", "Lead", "SDE II", "L5" ...);
+  5. a fresher word ("SDE 1", "fresher", "2026 batch" ...);
+  6. a fresher-only source (Naukri Campus).
 
-If `avoid_roles` includes `intern / internship`, listings whose title doesn't say so
-still count as internships when the link is an Internshala internship page, the
-listing says "internship", or it gives a stipend ("Unpaid", up to ₹40,000 a month).
+  Ranges use the minimum: a minimum of up to `pass_max_min_years` (1) is fresher, up
+  to `stretch_min_years` (2) is a stretch, and above that is too senior.
+- **Location:** a known place outside `location.allowed` is filtered, unless the job
+  is remote and `remote_ok` is true. `Delhi NCR` covers Delhi, Gurugram, Noida,
+  Ghaziabad and Faridabad, and PIN codes are recognised. Jobs with no location, only
+  "India", or only a state containing one of your cities pass.
 
-Filtered jobs are never deleted. They stay under **All**, with the reason.
+**Needs a quick check.** Most alerts (all of LinkedIn's) don't say what experience a
+job wants. With `unknown_policy: needs_check`, such jobs pass the filter but never go
+into Apply today until verified. They wait in **Needs a quick check**, under Apply
+today and as a tab on Job alerts, ranked by fit. Open the posting, read the experience
+line, and click **Fresher OK** (eligible for Apply today) or **Too senior** (filtered).
+**Undo check** reverses either.
+
+Filtered jobs are never deleted. They stay under **Filtered** and **All**, with the
+reason. `mailwarden jobs prefilter` prints the counts per reason and per experience
+level.
 
 ### Expired jobs
 
@@ -335,6 +358,8 @@ shortlist:
   .NET/PHP) takes more than `max_family_share` of it (default 25%), unless there
   aren't enough other jobs. Generic titles such as "Software Engineer" or "SDE 1" are
   never capped. Each card shows its family.
+- It takes only jobs with a verified experience level (fresher, or at most
+  `max_stretch_in_apply_today` stretch jobs).
 - It skips jobs you dismissed, jobs filtered out, expired jobs, and jobs whose company
   and role are already in your Applications.
 

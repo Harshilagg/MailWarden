@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 
 from mailwarden.core.overview import Digest, build_digest, digest_markdown
+from mailwarden.core.policy import MatchingPolicy
 from mailwarden.delivery.base import DigestSink, Notifier
 from mailwarden.storage.base import Repository
 
@@ -33,7 +34,7 @@ def maybe_notify_top_jobs(
     user_id: str,
     *,
     now: dt.datetime,
-    profile: dict | None,
+    policy: MatchingPolicy | None,
     notifier: Notifier | None,
     expire_after_days: int = 0,
 ) -> int:
@@ -46,7 +47,7 @@ def maybe_notify_top_jobs(
     last = repo.get_state(user_id, NOTICE_AT_KEY)
     since = dt.datetime.fromisoformat(last) if last else now - DEFAULT_WINDOW
     applied = AppliedIndex.from_applications(repo.list_applications(user_id))
-    n = new_strong_jobs(repo.list_jobs(user_id), profile, since=since, applied=applied, now=now,
+    n = new_strong_jobs(repo.list_jobs(user_id), policy, since=since, applied=applied, now=now,
                         expire_after_days=expire_after_days)
     if n == 0:
         return 0

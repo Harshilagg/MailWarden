@@ -14,6 +14,7 @@ from mailwarden.core.models import JobPost
 from mailwarden.security.net import PublicFetchBlocked, PublicWebSession, check_public_url
 from mailwarden.storage.sqlite_store import SQLCipherRepository
 from tests.conftest import FakeTransport, mount
+from tests.policy_helpers import POLICY
 
 NOW = dt.datetime(2026, 10, 1, 9, 0, tzinfo=dt.UTC)
 JD_TEXT = ("About the role\nYou will build backend services in Go and PostgreSQL.\n"
@@ -250,34 +251,35 @@ def test_auto_fetch_only_candidates_on_ats_and_caches(repo):
         urls.append(url)
         return 200, {"content": JD_TEXT}
 
-    st = fetch_auto_jds(repo, "local", PROFILE, get_json=get_json, limit=10, now=NOW, sleep=lambda s: None)
+    st = fetch_auto_jds(repo, "local", POLICY, get_json=get_json, limit=10, now=NOW, sleep=lambda s: None)
     assert urls == ["https://boards-api.greenhouse.io/v1/boards/acme/jobs/1"]  # not LinkedIn, not the senior job
     assert st.fetched == 1
     job = next(j for j in repo.list_jobs("local") if j.company == "Acme")
     assert job.jd_status == "ok" and job.jd_source == "api:greenhouse"
-    fetch_auto_jds(repo, "local", PROFILE, get_json=get_json, limit=10, now=NOW + dt.timedelta(days=1),
+    fetch_auto_jds(repo, "local", POLICY, get_json=get_json, limit=10, now=NOW + dt.timedelta(days=1),
                    sleep=lambda s: None)
     assert len(urls) == 1  # cached for 7 days
 
 
 def test_scores_preliminary_then_full_and_only_when_inputs_change(repo):
     llm = FitLLM(_out())
-    st = score_jobs(repo, "local", llm, PROFILE, {"go": 0.9}, limit=10)
+    st = score_jobs(repo, "local", llm, PROFILE, {"go": 0.9}, limit=10, policy=POLICY)
     assert st.scored == 2 and st.preliminary == 2  # the senior job is prefiltered, not scored
-    assert score_jobs(repo, "local", llm, PROFILE, {"go": 0.9}, limit=10).unchanged == 2  # cached
+    assert score_jobs(repo, "local", llm, PROFILE, {"go": 0.9}, limit=10, policy=POLICY).unchanged == 2  # cached
     acme = next(j for j in repo.list_jobs("local") if j.company == "Acme")
     assert acme.score == 7.0 and acme.score_level == "preliminary"
     repo.save_jd("local", acme.id, status="ok", reason=None, source="paste", text=JD_TEXT)
-    st = score_jobs(repo, "local", llm, PROFILE, {"go": 0.9}, limit=10)
+    st = score_jobs(repo, "local", llm, PROFILE, {"go": 0.9}, limit=10, policy=POLICY)
     assert st.scored == 1 and st.full == 1
     acme = next(j for j in repo.list_jobs("local") if j.company == "Acme")
     assert acme.score == 9.0 and acme.score_level == "full" and acme.missing_skills[0] == fit.CS_DEGREE
     # profile change -> rescore
-    assert score_jobs(repo, "local", llm, {**PROFILE, "education": "B.Tech CS"}, {"go": 0.9}, limit=10).scored == 2
+    assert score_jobs(repo, "local", llm, {**PROFILE, "education": "B.Tech CS"}, {"go": 0.9}, limit=10,
+                      policy=POLICY).scored == 2
 
 
 def test_scoring_never_hides_jobs(repo):
-    score_jobs(repo, "local", FitLLM(_out(score=0.5)), PROFILE, {"go": 0.9}, limit=10)
+    score_jobs(repo, "local", FitLLM(_out(score=0.5)), PROFILE, {"go": 0.9}, limit=10, policy=POLICY)
     assert len(repo.list_jobs("local")) == 3
 
 

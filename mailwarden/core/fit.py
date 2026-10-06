@@ -29,7 +29,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from mailwarden.core.classify.base import InvalidOutput, LLMBackend, tidy_model_text
-from mailwarden.core.prefilter import _required_years
+from mailwarden.core.experience import required_years
 from mailwarden.core.text import clean
 
 log = logging.getLogger(__name__)
@@ -205,7 +205,7 @@ def finalise(raw: str, *, level: str, profile_p: dict, job_p: dict) -> FitScore:
     if level == "preliminary":
         score = min(score, PRELIMINARY_CAP)
     else:
-        years = _required_years(jd or "")
+        years = required_years(jd)
         if years is not None and years > 2:
             score = min(score, EXPERIENCE_CAP)
         if needs_cs_degree(jd, profile_p.get("education")) and not any("degree" in m.lower() for m in missing):

@@ -68,6 +68,8 @@ class DashboardDeps:
     job_locations: list[str] = field(default_factory=list)
     #: Loads profile.yaml (None if not built yet); read per request so edits apply at once.
     profile_loader: Callable[[], dict | None] = lambda: None
+    #: Loads matching.yaml (or the shipped defaults); read per request so edits apply at once.
+    policy_loader: Callable[[], object | None] = lambda: None
     #: Job-description buttons (core.job_scoring.JobActions); None disables them.
     job_actions: object | None = None
     watchlist: list[str] = field(default_factory=list)
@@ -78,7 +80,8 @@ class DashboardDeps:
     now: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.UTC)
 
 
-_JOB_VIEWS = ("candidates", "all", "filtered", "expired")
+_JOB_VIEWS = ("candidates", "check", "all", "filtered", "expired")
+CHECKS_SHOWN = 10  # quick-check jobs shown under Apply today (the rest are on Job alerts -> Needs a quick check)
 
 
 def _stage_label(stage: Stage | str | None) -> str:
@@ -245,7 +248,18 @@ def create_app(deps: DashboardDeps) -> FastAPI:
                       generated=dt.datetime.fromisoformat(d.generated_at),
                       sensitive_total=sum(d.sensitive_by_sender.values()))
 
-    def _job_rows(profile: dict | None):
+    def _load():
+        """(profile, policy, policy error). An invalid matching.yaml disables filtering and says why."""
+        try:
+            profile = deps.profile_loader()
+        except Exception:
+            profile = None
+        try:
+            return profile, deps.policy_loader(), None
+        except Exception as e:  # PolicyError, unreadable file
+            return profile, None, str(e)[:400]
+
+    def _job_rows(profile: dict | None, policy):
         from mailwarden.core.expiry import expired_reason
         from mailwarden.core.jd import plan
         from mailwarden.core.prefilter import prefilter_job
@@ -265,7 +279,7 @@ def create_app(deps: DashboardDeps) -> FastAPI:
         button = bool(actions and getattr(actions, "button_fetch_enabled", False))
         rows = []
         for j in stored:
-            verdict = prefilter_job(j, profile) if profile else None
+            verdict = prefilter_job(j, policy) if policy is not None else None
             if targets:
                 highlight = match_role(j.title, targets) is not None
             else:
@@ -277,7 +291,9 @@ def create_app(deps: DashboardDeps) -> FastAPI:
             rows.append({"job": j, "expired": expired, "match": highlight and not (verdict and verdict.excluded),
                          "link": safe_link(j.link), "verdict": verdict, "can_fetch": can_fetch,
                          "why_not": p.why_not if p.kind == "none" else None,
-                         "rank": rank_job(j, now=now, watchlist=deps.watchlist, applied=applied)})
+                         "experience": verdict.experience if verdict else None,
+                         "needs_check": bool(verdict and verdict.needs_check),
+                         "rank": rank_job(j, now=now, watchlist=deps.watchlist, applied=applied, policy=policy)})
         return rows, targets
 
     @app.get("/jobs")
@@ -290,17 +306,17 @@ def create_app(deps: DashboardDeps) -> FastAPI:
         if view not in _JOB_VIEWS:
             view = "candidates"
         sort = sort if sort in ("score", "newest") else "score"
-        try:
-            profile = deps.profile_loader()
-        except Exception:
-            profile = None
-        rows, targets = _job_rows(profile)
+        profile, policy, policy_error = _load()
+        rows, targets = _job_rows(profile, policy)
         expired = [r for r in rows if r["expired"]]
         current = [r for r in rows if not r["expired"]]
         excluded = [r for r in current if r["verdict"] and r["verdict"].excluded]
         candidates = [r for r in current if not (r["verdict"] and r["verdict"].excluded)]
-        counts = {"candidates": len(candidates), "all": len(rows), "filtered": len(excluded), "expired": len(expired)}
-        rows = {"candidates": candidates, "filtered": excluded, "expired": expired, "all": rows}[view]
+        check = [r for r in candidates if r["needs_check"]]
+        counts = {"candidates": len(candidates), "all": len(rows), "filtered": len(excluded), "expired": len(expired),
+                  "check": len(check)}
+        rows = {"candidates": candidates, "check": check, "filtered": excluded, "expired": expired,
+                "all": rows}[view]
         # Source chips: only sources that have produced jobs in this view, with counts.
         type_counts: dict[str, int] = {}
         source_counts: dict[str, int] = {}
@@ -322,15 +338,15 @@ def create_app(deps: DashboardDeps) -> FastAPI:
             from mailwarden.core.ranking import sort_key
 
             rows.sort(key=lambda r: sort_key(r["job"], r["rank"]))
-        apply_n = len(_apply_picks(profile))
+        apply_n = len(_apply_picks(policy))
         return render("jobs.html", request, rows=rows, view=view, sort=sort, counts=counts, apply_n=apply_n,
                       type=type, source=source, type_chips=type_chips, source_chips=source_chips,
                       has_profile=profile is not None, targets=targets, keywords=deps.job_keywords,
                       locations=deps.job_locations, actions=deps.job_actions is not None,
-                      expire_days=deps.expire_after_days)
+                      expire_days=deps.expire_after_days, policy_error=policy_error)
 
-    def _apply_picks(profile: dict | None):
-        from mailwarden.core.ranking import AppliedIndex, apply_today
+    def _apply_picks(policy, *, with_checks: bool = False):
+        from mailwarden.core.ranking import AppliedIndex, apply_today, quick_check_queue
 
         repo = deps.repo_factory()
         try:
@@ -338,16 +354,19 @@ def create_app(deps: DashboardDeps) -> FastAPI:
             applied = AppliedIndex.from_applications(repo.list_applications(deps.user_id))
         finally:
             repo.close()
-        return apply_today(jobs, profile, n=deps.apply_today_count, now=deps.now(), watchlist=deps.watchlist,
-                           applied=applied, expire_after_days=deps.expire_after_days,
-                           new_within_days=deps.apply_today_days, max_family_share=deps.max_family_share)
+        picks = apply_today(jobs, policy, n=deps.apply_today_count, now=deps.now(), watchlist=deps.watchlist,
+                            applied=applied, expire_after_days=deps.expire_after_days,
+                            new_within_days=deps.apply_today_days, max_family_share=deps.max_family_share)
+        if not with_checks:
+            return picks
+        checks = quick_check_queue(jobs, policy, now=deps.now(), watchlist=deps.watchlist, applied=applied,
+                                   expire_after_days=deps.expire_after_days, new_within_days=deps.apply_today_days)
+        return picks, checks
 
     @app.get("/apply")
     def apply_view(request: Request) -> Response:
-        try:
-            profile = deps.profile_loader()
-        except Exception:
-            profile = None
+        profile, policy, policy_error = _load()
+        from mailwarden.core.prefilter import prefilter_job
         from mailwarden.core.ranking import role_family
         from mailwarden.recall import audit_due
 
@@ -356,11 +375,35 @@ def create_app(deps: DashboardDeps) -> FastAPI:
             due = audit_due(repo, deps.user_id, deps.now()) if profile is not None else None
         finally:
             repo.close()
-        picks = [{"job": j, "rank": info, "link": safe_link(j.link), "family": role_family(j.title)}
-                 for j, info in _apply_picks(profile)]
+        chosen, queue = _apply_picks(policy, with_checks=True)
+
+        def card(j, info):
+            verdict = prefilter_job(j, policy) if policy is not None else None
+            return {"job": j, "rank": info, "link": safe_link(j.link), "family": role_family(j.title),
+                    "experience": verdict.experience if verdict else None}
+
+        picks = [card(j, info) for j, info in chosen]
+        checks = [card(j, info) for j, info in queue if info.rank is not None][:CHECKS_SHOWN]
+        max_stretch = policy.experience.max_stretch_in_apply_today if policy is not None else None
         return render("apply.html", request, picks=picks, n=deps.apply_today_count, has_profile=profile is not None,
                       watchlist=deps.watchlist, days=deps.apply_today_days,
-                      family_pct=round(deps.max_family_share * 100), audit_due=due)
+                      family_pct=round(deps.max_family_share * 100), audit_due=due, checks=checks,
+                      checks_total=len(queue), max_stretch=max_stretch, policy_error=policy_error)
+
+    @app.post("/jobs/{job_id}/experience")
+    async def experience_check(request: Request, job_id: int) -> Response:
+        try:
+            form = await check_post(request)
+        except PermissionError:
+            return forbidden()
+        value = {"fresher": "fresher", "senior": "senior", "clear": None}.get(form.get("value", ""), "invalid")
+        if value != "invalid":
+            repo = deps.repo_factory()
+            try:
+                repo.set_experience_check(deps.user_id, job_id, value)
+            finally:
+                repo.close()
+        return _back(form, job_id)
 
     def _back(form: dict[str, str], job_id: int | None = None) -> RedirectResponse:
         if form.get("view") == "apply":
@@ -399,8 +442,8 @@ def create_app(deps: DashboardDeps) -> FastAPI:
         except PermissionError:
             return forbidden()
         if deps.job_actions is not None:
-            profile = deps.profile_loader()
-            rows, _ = _job_rows(profile)
+            profile, policy, _ = _load()
+            rows, _ = _job_rows(profile, policy)
             rows = [r for r in rows if r["can_fetch"] and not r["expired"]
                     and not (r["verdict"] and r["verdict"].excluded)]
             rows.sort(key=lambda r: (-(r["job"].score or 0), -r["job"].received_at.timestamp()))

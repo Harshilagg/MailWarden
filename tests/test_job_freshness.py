@@ -12,12 +12,13 @@ from mailwarden.core.models import JobPost, StoredJob
 from mailwarden.core.prefilter import is_stipend, prefilter, prefilter_job
 from mailwarden.core.ranking import AppliedIndex, apply_today, new_strong_jobs, role_family
 from mailwarden.storage.sqlite_store import SQLCipherRepository
+from tests.policy_helpers import policy
 from tests.test_dashboard import PROFILE as DASH_PROFILE
 from tests.test_dashboard import client, env  # noqa: F401  (fixture)
 
 NOW = dt.datetime(2026, 10, 5, 12, 0, tzinfo=dt.UTC)
 NONE = AppliedIndex()
-PROFILE = {"avoid_roles": ["intern / internship"], "locations": ["Bengaluru", "Remote"], "remote_ok": True}
+PROFILE = policy(location={"allowed": ["Bengaluru"]}, experience={"unknown_policy": "allow"})
 
 
 def job(i, title="Backend Engineer", *, score=6.0, days=1, last_seen_days=None, jd_status=None, jd_text=None,
@@ -111,7 +112,7 @@ def test_expired_jobs_are_not_fetched_or_scored(repo):
     by_company = {j.company: j for j in repo.list_jobs("local")}
     assert by_company["Fresh"].jd_status == "closed"  # 404: the posting is gone
     llm = _LLM()
-    st = score_jobs(repo, "local", llm, PROFILE, {"go": 0.5}, limit=10, now=NOW, expire_after_days=14)
+    st = score_jobs(repo, "local", llm, {}, {"go": 0.5}, limit=10, now=NOW, expire_after_days=14, policy=PROFILE)
     assert llm.calls == 0 and st.scored == 0  # one closed, one stale: nothing worth an LLM call
 
 
@@ -171,20 +172,20 @@ def test_is_stipend(details, stipend):
 def test_stipend_listing_counts_as_internship_only_if_you_avoid_internships():
     j = job(1, "Web Development", details="₹ 10,000 - 15,000 /month")
     verdict = prefilter_job(j, PROFILE)
-    assert verdict.excluded and "avoid role: intern / internship (stipend" in verdict.reasons[0]
-    assert not prefilter_job(j, {**PROFILE, "avoid_roles": ["sales"]}).excluded
-    assert not prefilter("Web Development", "Bengaluru", PROFILE, details="₹ 3,00,000 /year").excluded
+    assert verdict.excluded and verdict.reasons[0].startswith("excluded role: internship (stipend")
+    assert not prefilter_job(j, policy(hard_exclusions={"role_types": ["sales"]})).excluded
+    assert not prefilter(PROFILE, title="Web Development", location="Bengaluru", details="₹ 3,00,000 /year").excluded
 
 
 def test_internshala_internship_links_and_wording():
     tracked = ("https://et.internshala.com/CL0/https:%2F%2Finternshala.com%2Finternship%2Fdetail%2F"
                "python-development-at-acme123/1/0100")
     job_link = "https://et.internshala.com/CL0/https:%2F%2Finternshala.com%2Fappcast%2Fjob%2Fdetail%2Fx/1/0100"
-    v = prefilter("Python Development", "Bengaluru", PROFILE, link=tracked)
+    v = prefilter(PROFILE, title="Python Development", location="Bengaluru", link=tracked)
     assert v.excluded and "(Internshala internship)" in v.reasons[0]
-    assert not prefilter("Python Development", "Bengaluru", PROFILE, link=job_link).excluded
+    assert not prefilter(PROFILE, title="Python Development", location="Bengaluru", link=job_link).excluded
     wording = "6 months, ₹30,000-45,000/month, Job offer starting ₹9LPA post internship"
-    v = prefilter("Software Development", "Bengaluru", PROFILE, details=wording)
+    v = prefilter(PROFILE, title="Software Development", location="Bengaluru", details=wording)
     assert v.excluded and "(listing says internship)" in v.reasons[0]
 
 

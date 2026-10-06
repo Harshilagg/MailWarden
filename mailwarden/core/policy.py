@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+from functools import cached_property
+from importlib import resources
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -45,16 +48,56 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class TermMatcher:
+    """Whole-word matching of policy terms ("sde i" doesn't match "SDE II", "lead" doesn't match
+    "leadership"). A space in a term also matches a hyphen or nothing ("sde 3" ~ "SDE-3" ~ "SDE3"); a term that
+    starts or ends with punctuation (".net", "c++", "c#", "sr.") isn't boundary-checked on that side,
+    so "ASP.NET" matches ".net". Linear time: one alternation of escaped literals."""
+
+    def __init__(self, terms: list[str]) -> None:
+        self.terms = [t for t in terms if t]
+        self._by_key = {re.sub(r"[\s\-]+", "", t): t for t in self.terms}
+        parts = []
+        for term in sorted(self.terms, key=len, reverse=True):
+            body = r"[\s\-]*".join(re.escape(w) for w in term.split(" "))
+            left = r"(?<![a-z0-9])" if term[0].isalnum() else ""
+            right = r"(?![a-z0-9+#])" if term[-1].isalnum() else ""
+            parts.append(f"{left}{body}{right}")
+        self._rx = re.compile("|".join(parts), re.IGNORECASE) if parts else None
+
+    def find(self, text: str) -> str | None:
+        """The first term found in ``text`` (as written in the policy), or None."""
+        if self._rx is None or not text:
+            return None
+        m = self._rx.search(text[:20_000])
+        return self._term(m.group(0)) if m else None
+
+    def find_all(self, text: str) -> list[str]:
+        if self._rx is None or not text:
+            return []
+        out: list[str] = []
+        for m in self._rx.finditer(text[:20_000]):
+            if (term := self._term(m.group(0))) not in out:
+                out.append(term)
+        return out
+
+    def _term(self, matched: str) -> str:
+        key = re.sub(r"[\s\-]+", "", matched.lower())
+        return self._by_key.get(key, matched.lower())
+
+
 class Experience(_Strict):
     pass_max_min_years: int = Field(default=1, ge=0, le=10)
     stretch_min_years: int = Field(default=2, ge=0, le=10)
     max_stretch_in_apply_today: int = Field(default=3, ge=0, le=50)
     fresher_signals: list[str] = []
     senior_signals: list[str] = []
+    # Sources that only list fresher jobs (e.g. campus hiring): their jobs count as verified fresher.
+    fresher_sources: list[str] = []
     # needs_check: never in Apply today until verified; allow: treat unknown like fresher.
     unknown_policy: Literal["needs_check", "allow"] = "needs_check"
 
-    _norm = field_validator("fresher_signals", "senior_signals")(lambda cls, v: _terms(v))
+    _norm = field_validator("fresher_signals", "senior_signals", "fresher_sources")(lambda cls, v: _terms(v))
 
     @model_validator(mode="after")
     def _ordered(self) -> Experience:
@@ -77,6 +120,14 @@ class SoftPenalties(_Strict):
     _norm = field_validator("stacks")(lambda cls, v: _terms(v))
 
 
+class LocationRule(_Strict):
+    # Cities you'd work in ("Delhi NCR" covers its cities). Empty = no location filter.
+    allowed: list[str] = []
+    remote_ok: bool = True
+
+    _norm = field_validator("allowed")(lambda cls, v: _terms(v))
+
+
 class StackFamily(_Strict):
     keywords: list[str] = Field(min_length=1)
     evidence_project: str | None = None
@@ -93,6 +144,7 @@ class BestProjectRule(_Strict):
 class MatchingPolicy(_Strict):
     experience: Experience = Experience()
     hard_exclusions: HardExclusions = HardExclusions()
+    location: LocationRule = LocationRule()
     soft_penalties: SoftPenalties = SoftPenalties()
     stack_families: dict[str, StackFamily] = Field(min_length=1)
     best_project_rule: BestProjectRule = BestProjectRule()
@@ -113,6 +165,32 @@ class MatchingPolicy(_Strict):
         if any(not line or len(line) > MAX_RUBRIC_LINE for line in lines):
             raise ValueError(f"scoring_rubric lines must be non-empty and at most {MAX_RUBRIC_LINE} characters")
         return lines
+
+    model_config = ConfigDict(extra="forbid", frozen=True, ignored_types=(cached_property,))
+
+    @cached_property
+    def fresher(self) -> TermMatcher:
+        return TermMatcher(self.experience.fresher_signals)
+
+    @cached_property
+    def senior(self) -> TermMatcher:
+        return TermMatcher(self.experience.senior_signals)
+
+    @cached_property
+    def excluded_roles(self) -> TermMatcher:
+        return TermMatcher([t for t in self.hard_exclusions.role_types if t not in _SPECIAL_ROLE_TYPES])
+
+    @cached_property
+    def excluded_conditions(self) -> TermMatcher:
+        return TermMatcher(self.hard_exclusions.conditions)
+
+    @cached_property
+    def any_stack(self) -> TermMatcher:
+        return TermMatcher([kw for fam in self.stack_families.values() for kw in fam.keywords])
+
+    @cached_property
+    def penalised_stacks(self) -> TermMatcher:
+        return TermMatcher(self.soft_penalties.stacks)
 
     def fingerprint(self) -> str:
         """Changes whenever anything in the policy changes (part of the fit-score cache key)."""
@@ -146,6 +224,19 @@ class MatchingPolicy(_Strict):
         if both:
             warnings.append(f"in both fresher_signals and senior_signals: {', '.join(sorted(both))}")
         return warnings
+
+
+# Role types with a built-in meaning (see core.prefilter): "internship" also catches "intern"
+# titles, Internshala internship links and stipends; "non-engineering" catches titles with no
+# engineering word and no stack keyword.
+_SPECIAL_ROLE_TYPES = ("internship", "non-engineering")
+
+
+def default_policy() -> MatchingPolicy:
+    """The shipped template, used until you create matching.yaml."""
+    import yaml
+
+    return parse(yaml.safe_load(resources.files("mailwarden.templates").joinpath("matching.yaml").read_text("utf-8")))
 
 
 def parse(data: object) -> MatchingPolicy:

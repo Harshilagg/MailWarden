@@ -2,14 +2,17 @@
 {% block title %}Job alerts · mailwarden{% endblock %}
 {% block content %}
 <h1>Job alerts <span class="count">{{ counts.all }}</span></h1>
+{% if policy_error %}<p class="empty"><strong>matching.yaml has a problem, so nothing is filtered right now:</strong> {{ policy_error }}<br>Run <code>mailwarden matching check</code>.</p>{% endif %}
 <p class="lead">Jobs from your job-alert emails, with duplicates across sites merged.
-{% if has_profile %}Candidates pass your profile's prefilter. Scores only order the list: nothing is deleted. Filtered jobs stay under Filtered and All with the reason,
+{% if has_profile %}Candidates pass the filters in <code>matching.yaml</code> (hard exclusions, experience, location); the stack never filters.
+Candidates whose experience level the alert doesn't state wait under Needs a quick check. Scores only order the list: nothing is deleted. Filtered jobs stay under Filtered and All with the reason,
 and jobs that have gone stale{% if expire_days %} (not in any alert for {{ expire_days }} days, or the posting is closed){% else %} (the posting is closed){% endif %} move to Expired.
 A <em>preliminary</em> score comes from the alert alone (at most 7); a <em>full</em> score uses the job description.
 {% else %}Build your profile (<code>mailwarden profile build</code>) to filter and score jobs.{% endif %}</p>
 <p class="filters">
   <a href="/apply">Apply today ({{ apply_n }})</a>
   <a href="/jobs?view=candidates&sort={{ sort }}"{% if view == "candidates" %} aria-current="page"{% endif %}>Candidates ({{ counts.candidates }})</a>
+  <a href="/jobs?view=check&sort={{ sort }}"{% if view == "check" %} aria-current="page"{% endif %}>Needs a quick check ({{ counts.check }})</a>
   <a href="/jobs?view=all&sort={{ sort }}"{% if view == "all" %} aria-current="page"{% endif %}>All ({{ counts.all }})</a>
   <a href="/jobs?view=filtered&sort={{ sort }}"{% if view == "filtered" %} aria-current="page"{% endif %}>Filtered ({{ counts.filtered }})</a>
   <a href="/jobs?view=expired&sort={{ sort }}"{% if view == "expired" %} aria-current="page"{% endif %}>Expired ({{ counts.expired }})</a>
@@ -36,7 +39,9 @@ A <em>preliminary</em> score comes from the alert alone (at most 7); a <em>full<
   <button class="secondary">Fetch JDs for top 10</button>
 </form>
 {% endif %}
-{% if not rows %}<p class="empty">{% if view == "filtered" %}Nothing is filtered out.{% elif view == "expired" %}Nothing has expired.{% elif view == "candidates" and counts.all %}Every job is filtered out: see All.{% else %}No jobs yet. They appear as job-alert emails are processed.{% endif %}</p>{% endif %}
+{% if view == "check" %}<p class="meta">These pass your filters, but the alert doesn't say what experience they want, so they can't go into Apply today yet.
+Open the posting, check the experience line, and mark it <strong>Fresher OK</strong> or <strong>Too senior</strong>.</p>{% endif %}
+{% if not rows %}<p class="empty">{% if view == "filtered" %}Nothing is filtered out.{% elif view == "check" %}Nothing needs a check.{% elif view == "expired" %}Nothing has expired.{% elif view == "candidates" and counts.all %}Every job is filtered out: see All.{% else %}No jobs yet. They appear as job-alert emails are processed.{% endif %}</p>{% endif %}
 <ul class="jobs">
 {% for r in rows %}{% set j = r.job %}
   <li class="job{% if r.match %} match{% endif %}" id="job-{{ j.id }}">
@@ -48,6 +53,7 @@ A <em>preliminary</em> score comes from the alert alone (at most 7); a <em>full<
       {% if j.missing_skills %}<span class="meta">Missing: {{ j.missing_skills|join(", ") }}</span>{% endif %}
       <span class="meta">via {{ j.source_name or j.sender }} · {{ j.received_at|ago }}{% if j.also_on %} · also on: {{ j.also_on|join(", ") }}{% endif %}</span>
       {% if r.expired %}<span class="meta"><span class="pill">Expired</span> {{ r.expired }}</span>{% endif %}
+      {% if r.experience and not (r.verdict and r.verdict.excluded) %}<span class="meta">{% if r.needs_check %}<span class="pill">Needs a quick check</span>{% elif r.experience.status == "stretch" %}<span class="pill">Stretch</span>{% else %}<span class="pill">Fresher OK</span>{% endif %} {{ r.experience.evidence }}</span>{% endif %}
       {% if r.verdict and r.verdict.excluded %}<span class="meta"><span class="pill">Filtered</span> {{ r.verdict.reasons|join("; ") }}</span>{% endif %}
       {% if j.jd_status == "ok" %}<span class="meta">Job description: {% if j.jd_source == "paste" %}pasted{% else %}fetched ({{ j.jd_source }}){% endif %}</span>
       {% elif j.jd_status == "closed" %}<span class="meta">Posting closed: {{ j.jd_reason }}</span>
@@ -65,6 +71,14 @@ A <em>preliminary</em> score comes from the alert alone (at most 7); a <em>full<
     </div>
     <div class="actions">
       {% if r.link %}<a class="button" href="{{ r.link }}" target="_blank" rel="noopener noreferrer">Open</a>{% endif %}
+      {% if r.needs_check or j.experience_check %}
+      {% for value, label in ([("clear", "Undo check")] if j.experience_check else [("fresher", "Fresher OK"), ("senior", "Too senior")]) %}
+      <form method="post" action="/jobs/{{ j.id }}/experience" class="inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="view" value="{{ view }}"><input type="hidden" name="sort" value="{{ sort }}"><input type="hidden" name="value" value="{{ value }}">
+        <button class="secondary">{{ label }}</button>
+      </form>
+      {% endfor %}
+      {% endif %}
       {% if r.can_fetch %}
       <form method="post" action="/jobs/{{ j.id }}/fetch-jd" class="inline">
         <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="view" value="{{ view }}"><input type="hidden" name="sort" value="{{ sort }}">

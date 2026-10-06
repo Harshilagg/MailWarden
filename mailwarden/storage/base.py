@@ -86,6 +86,10 @@ class Repository(ABC):
                   limit: int | None = None) -> list[StoredJob]: ...
 
     @abstractmethod
+    def set_experience_check(self, user_id: str, job_id: int, value: str | None) -> bool:
+        """Your quick check of a job's experience level: "fresher", "senior", or None to clear it."""
+
+    @abstractmethod
     def dismiss_job(self, user_id: str, job_id: int) -> bool: ...
 
     @abstractmethod

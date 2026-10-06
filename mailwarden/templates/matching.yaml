@@ -13,7 +13,11 @@ experience:
     "associate software engineer", "software engineer i", "junior"]
   senior_signals: [senior, "sr.", "sr ", lead, staff, principal, architect,
     manager, head, director, "engineer ii", "engineer iii", "sde 2",
-    "sde-2", "sde ii", "sde 3"]
+    "sde-2", "sde ii", "sde 3",
+    # level forms added 2026-10-06 (also caught: "SDE3", "SDE-2"):
+    "sde iii", "swe ii", "swe iii", "swe 2", "swe 3", "engineer 2", "engineer 3",
+    "l4", "l5", "l6", "vp", "vice president", "avp", chief]
+  fresher_sources: ["naukri campus"]   # campus hiring only lists fresher jobs
   unknown_policy: needs_check   # never in Apply today until verified
 
 hard_exclusions:            # filtered regardless of stack or score
@@ -24,6 +28,10 @@ hard_exclusions:            # filtered regardless of stack or score
     "content writer", "mechanical engineer", "civil engineer",
     "site engineer", "structural engineer"]
   conditions: [unpaid, "training fee", "service bond", "commission only"]
+
+location:                   # a known place outside this list is filtered
+  allowed: []                # e.g. [Bengaluru, "Delhi NCR"]; empty = no location filter
+  remote_ok: true            # "Remote" / "Work from home" jobs pass
 
 soft_penalties:             # pass, but rank lower (stacks you don't want to work in)
   stacks: [".net", "c#", php, "sap", abap, salesforce, mainframe, cobol,

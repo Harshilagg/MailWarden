@@ -12,11 +12,14 @@ from mailwarden.core.ranking import AppliedIndex
 from mailwarden.core.recall import Context, Finding, explain, sample, summarise
 from mailwarden.recall import audit_due, print_report, run_session
 from mailwarden.storage.sqlite_store import SQLCipherRepository
+from tests.policy_helpers import policy
 from tests.test_dashboard import PROFILE as DASH_PROFILE
 from tests.test_dashboard import client, env  # noqa: F401  (fixture)
 
 NOW = dt.datetime(2026, 10, 5, 12, 0, tzinfo=dt.UTC)
-PROFILE = {"avoid_roles": ["intern / internship", "sales"], "locations": ["Bengaluru", "Remote"], "remote_ok": True}
+# Title-only test jobs have no stated experience: "allow" lets them rank, except where a test gates on it.
+PROFILE = policy(location={"allowed": ["Bengaluru"]}, experience={"unknown_policy": "allow"})
+GATED = policy(location={"allowed": ["Bengaluru"]})
 SKILLS = {"react": 0.85, "go": 0.6, "express": 0.3}
 
 
@@ -29,7 +32,7 @@ def job(i, title="Backend Engineer", *, score=6.0, level="preliminary", days=1, 
 
 
 def ctx(jobs, *, n=3, share=0.0, window=3, expire=14, applied=None, profile=PROFILE):
-    return Context(jobs=jobs, profile=profile, effective_skills=SKILLS, now=NOW, n=n, watchlist=[],
+    return Context(jobs=jobs, policy=profile, effective_skills=SKILLS, now=NOW, n=n, watchlist=[],
                    applied=applied or AppliedIndex(), expire_after_days=expire, window_days=window,
                    family_share=share)
 
@@ -46,17 +49,19 @@ def test_filtered_jobs_name_the_rule_and_the_change():
             job(5, "Web Development", details="₹ 10,000 /month")]
     c = ctx(jobs)
     (f,) = explain(jobs[0], c)
-    assert f.detail == "seniority rule: the title contains 'senior'" and "stop treating 'senior'" in f.suggestion
+    assert f.detail == "too senior: the title has 'senior'"
+    assert f.suggestion.startswith("matching.yaml: remove 'senior' from experience.senior_signals")
     (f,) = explain(jobs[1], c)
-    assert "'Pune, Maharashtra, India' is not in your locations" in f.detail
-    assert f.suggestion == "profile.yaml: add 'Pune' to locations"
+    assert f.detail == "location: 'Pune, Maharashtra, India' is not in location.allowed"
+    assert f.suggestion == "matching.yaml: add 'Pune' to location.allowed"
     (f,) = explain(jobs[2], c)
-    assert f.detail == "avoid_roles category 'sales' matched" and f.suggestion == \
-        "profile.yaml: remove 'sales' from avoid_roles"
+    assert f.detail == "hard exclusion: role type 'sales'"
+    assert f.suggestion == "matching.yaml: remove 'sales' from hard_exclusions.role_types"
     (f,) = explain(jobs[3], c)
-    assert "asks for 5+ years" in f.detail and f.suggestion == "rule change: allow roles asking up to 5 years"
+    assert f.detail == "too senior: listing says 5+ years (stretch allows up to 2)"
+    assert f.suggestion == "matching.yaml: raise experience.stretch_min_years to 5 (now 2)"
     (f,) = explain(jobs[4], c)
-    assert f.detail.startswith("avoid_roles entry 'intern / internship' matched (stipend")
+    assert f.detail.startswith("hard exclusion: role type 'internship' (stipend")
 
 
 def test_not_scored_expired_window_and_applied():
@@ -107,7 +112,7 @@ def test_full_score_caps_are_explained():
     must = job(9, score=6.0, level="full", jd_status="ok", jd_text="Great role. " * 20, missing=["Kafka"])
     c = ctx([*top, exp, must])
     # A JD asking 3+ years is caught by the prefilter before any score cap matters.
-    assert [f.detail for f in explain(exp, c)] == ["experience rule: asks for 4+ years (limit is 2)"]
+    assert [f.detail for f in explain(exp, c)] == ["too senior: job description says 4+ years (stretch allows up to 2)"]
     assert any(f.detail == "missing must-have skill(s) cap the score at 6: Kafka" for f in explain(must, c))
 
 
@@ -123,6 +128,22 @@ def test_ties_at_the_cutoff_are_called_ties():
     c = ctx(jobs, n=2)
     (tied, *_) = explain(jobs[2], c)
     assert tied.key == "tie" and "tied with the cutoff for the top 2" in tied.detail
+
+
+def test_unknown_experience_waits_for_a_quick_check():
+    j = job(1, "Software Engineer", score=8.0)
+    (f,) = explain(j, ctx([j], profile=GATED))
+    assert f.kind == "needs_check" and "Needs a quick check" in f.detail and "Fresher OK" in f.suggestion
+
+
+def test_stretch_limit_is_named():
+    p = policy(location={"allowed": ["Bengaluru"]}, experience={"max_stretch_in_apply_today": 1})
+    jobs = [job(1, "Backend Engineer (2-4 yrs)", score=8.0), job(2, "Platform Engineer (2+ yrs)", score=7.0)]
+    c = ctx(jobs, n=5, profile=p)
+    assert c.pick_ids == {1}
+    (f,) = explain(jobs[1], c)
+    assert f.kind == "stretch_cap" and "1 of 1 stretch slots" in f.detail
+    assert f.suggestion == "matching.yaml: raise experience.max_stretch_in_apply_today (now 1)"
 
 
 # --- sampling and the summary ------------------------------------------------------------------
@@ -212,8 +233,8 @@ def test_report_counts_reasons_and_suggestions(repo):
     print_report(repo, "local", out, now=NOW)
     text = out.getvalue()
     assert "last 7 days: 3 audited, 2/3 (67%) missed-good" in text
-    assert "prefilter rule" in text and "profile.yaml: add 'Pune' to locations" in text
-    assert "rule change: stop treating 'senior' in a title as too senior" in text
+    assert "prefilter rule" in text and "matching.yaml: add 'Pune' to location.allowed" in text
+    assert "matching.yaml: remove 'senior' from experience.senior_signals" in text
     assert "Senior Backend Engineer · C  [" in text and "preliminary, audited 2026-10-05]" in text
     assert "SDE 1" not in text.split("Missed-good jobs")[1]  # you said no: not a miss
 
@@ -227,6 +248,7 @@ def test_audits_go_when_the_job_goes(repo):
 
 def test_dashboard_reminds_weekly(env):  # noqa: F811
     env.profile_loader = lambda: DASH_PROFILE
+    env.policy_loader = lambda: policy(experience={"unknown_policy": "allow"})
     env.now = lambda: NOW
     repo = env.repo_factory()
     repo.save_jobs("local", account="personal", message_id="j", sender="LinkedIn", received_at=NOW,

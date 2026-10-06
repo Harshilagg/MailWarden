@@ -2,9 +2,10 @@
 {% block title %}Apply today · mailwarden{% endblock %}
 {% block content %}
 <h1>Apply today</h1>
+{% if policy_error %}<p class="empty"><strong>matching.yaml has a problem, so nothing is filtered right now:</strong> {{ policy_error }}<br>Run <code>mailwarden matching check</code>.</p>{% endif %}
 <p class="lead">Your daily shortlist: the top {{ n }} jobs{% if days %} first seen in the last {{ days }} day{{ "s" if days != 1 }}{% endif %}, by rank
 (fit score, +0.5 if seen in the last 3 days, -1 if older than 3 weeks, +1 for watchlist companies{% if watchlist %}: {{ watchlist|join(", ") }}{% endif %}).
-Full scores come first at equal rank.{% if family_pct %} No single role family (Go, Java, full stack/web ...) takes more than about {{ family_pct }}% of the list
+Full scores come first at equal rank. Only jobs whose experience level is verified as fresher (or a stretch{% if max_stretch is not none %}, at most {{ max_stretch }}{% endif %}) are picked.{% if family_pct %} No single role family (Go, Java, full stack/web ...) takes more than about {{ family_pct }}% of the list
 unless there aren't enough other jobs.{% endif %} Jobs you've applied to, dismissed jobs and expired jobs are skipped.
 Everything else is still in <a href="/jobs?view=all">Job alerts → All</a>.</p>
 <p class="filters"><a href="/apply" aria-current="page">Apply today</a> <a href="/jobs">Job alerts</a></p>
@@ -21,6 +22,7 @@ Run <code>mailwarden jobs audit</code> to check 15 jobs this list left out, and 
   </div>
   <p class="meta">{{ j.company or "Company not listed" }}{% if j.location %} · {{ j.location }}{% endif %}{% if j.details %} · {{ j.details }}{% endif %}</p>
   <p class="meta">{{ p.rank.parts|join(" · ") }}</p>
+  {% if p.experience %}<p class="meta">{% if p.experience.status == "stretch" %}<span class="pill">Stretch</span>{% else %}<span class="pill">Fresher OK</span>{% endif %} {{ p.experience.evidence }}</p>{% endif %}
   {% if j.why %}<p class="summary">{{ j.why }}</p>{% endif %}
   {% if j.best_project %}<p class="meta">Lead with: <strong>{{ j.best_project }}</strong></p>{% endif %}
   {% if j.missing_skills %}<p class="meta">Missing: {{ j.missing_skills|join(", ") }}</p>{% endif %}
@@ -37,4 +39,28 @@ Run <code>mailwarden jobs audit</code> to check 15 jobs this list left out, and 
   </div>
 </article>
 {% endfor %}
+{% if checks %}
+<h2 id="check">Needs a quick check <span class="count">{{ checks_total }}</span></h2>
+<p class="meta">These pass your filters and rank well, but the alert doesn't say what experience they want. Open the posting, check the experience line,
+and mark it: <strong>Fresher OK</strong> moves it into Apply today, <strong>Too senior</strong> filters it.{% if checks_total > checks|length %} <a href="/jobs?view=check">All {{ checks_total }}</a>{% endif %}</p>
+<ul class="jobs">
+{% for p in checks %}{% set j = p.job %}
+  <li class="job" id="job-{{ j.id }}">
+    <div class="job-main">
+      <span class="job-title"><span class="pill">{{ "%.1f"|format(p.rank.rank) }}</span> {{ j.title }}</span>
+      <span class="meta">{{ j.company or "Company not listed" }}{% if j.location %} · {{ j.location }}{% endif %} · via {{ j.source_name or j.sender }} · {{ j.received_at|ago }}</span>
+    </div>
+    <div class="actions">
+      {% if p.link %}<a class="button" href="{{ p.link }}" target="_blank" rel="noopener noreferrer">Open</a>{% endif %}
+      {% for value, label in [("fresher", "Fresher OK"), ("senior", "Too senior")] %}
+      <form method="post" action="/jobs/{{ j.id }}/experience" class="inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="view" value="apply"><input type="hidden" name="value" value="{{ value }}">
+        <button class="secondary">{{ label }}</button>
+      </form>
+      {% endfor %}
+    </div>
+  </li>
+{% endfor %}
+</ul>
+{% endif %}
 {% endblock %}
