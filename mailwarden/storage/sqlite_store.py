@@ -17,6 +17,7 @@ import sqlcipher3
 
 from mailwarden.core.applications import company_key, role_key
 from mailwarden.core.models import (
+    JobAudit,
     JobPost,
     StoredJob,
     Application,
@@ -31,7 +32,7 @@ from mailwarden.security.fs import check_private, ensure_private_dir
 from mailwarden.security.secrets import SecretKeys, SecretStore
 from mailwarden.storage.base import ApplicationEvent, Repository
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # Columns added after v1: (name, SQL type). Applied with ALTER TABLE on open.
 _MESSAGE_COLUMNS_V2 = (
@@ -127,6 +128,17 @@ CREATE TABLE IF NOT EXISTS job_labels (
     labelled_at TEXT NOT NULL,
     PRIMARY KEY (user_id, job_id)
 );
+CREATE TABLE IF NOT EXISTS job_audits (
+    id INTEGER PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    job_id INTEGER NOT NULL REFERENCES job_postings(id) ON DELETE CASCADE,
+    answer TEXT NOT NULL CHECK (answer IN ('apply', 'no')),
+    findings TEXT NOT NULL,
+    score REAL,
+    score_level TEXT,
+    audited_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS job_audits_user ON job_audits (user_id, audited_at);
 CREATE TABLE IF NOT EXISTS user_state (
     user_id TEXT NOT NULL,
     key TEXT NOT NULL,
@@ -595,6 +607,21 @@ class SQLCipherRepository(Repository):
             "labelled_at = excluded.labelled_at",
             (user_id, job_id, label, score, level, _now()),
         )
+
+    def save_audit(self, user_id: str, job_id: int, answer: str, findings: list[dict], *, score: float | None,
+                   level: str | None, at: dt.datetime) -> None:
+        self._db.execute(
+            "INSERT INTO job_audits (user_id, job_id, answer, findings, score, score_level, audited_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user_id, job_id, answer, json.dumps(findings), score, level, _iso(at)),
+        )
+
+    def list_audits(self, user_id: str) -> list[JobAudit]:
+        rows = self._db.execute(
+            "SELECT job_id, answer, findings, score, score_level, audited_at FROM job_audits "
+            "WHERE user_id = ? ORDER BY audited_at, id", (user_id,)).fetchall()
+        return [JobAudit(job_id=r[0], answer=r[1], findings=tuple(json.loads(r[2])), score=r[3], score_level=r[4],
+                         audited_at=dt.datetime.fromisoformat(r[5])) for r in rows]
 
     def list_labels(self, user_id: str) -> list[tuple[int, str, float | None]]:
         """(job_id, label, score when labelled), oldest first."""

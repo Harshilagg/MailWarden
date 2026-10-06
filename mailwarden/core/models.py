@@ -234,3 +234,16 @@ class StoredJob(BaseModel):
     best_project: str | None = None
     why: str | None = None
     score_hash: str | None = None
+
+
+class JobAudit(BaseModel):
+    """One recall-audit answer: would you apply to a job that Apply today left out, and why it was left out."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    job_id: int
+    answer: str  # "apply" | "no"
+    findings: tuple[dict, ...] = ()  # core.recall.Finding.to_dict(), as shown at audit time
+    score: float | None = None
+    score_level: str | None = None
+    audited_at: dt.datetime

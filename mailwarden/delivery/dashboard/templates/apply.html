@@ -8,6 +8,8 @@ Full scores come first at equal rank.{% if family_pct %} No single role family (
 unless there aren't enough other jobs.{% endif %} Jobs you've applied to, dismissed jobs and expired jobs are skipped.
 Everything else is still in <a href="/jobs?view=all">Job alerts → All</a>.</p>
 <p class="filters"><a href="/apply" aria-current="page">Apply today</a> <a href="/jobs">Job alerts</a></p>
+{% if audit_due is not none and picks %}<p class="meta"><strong>Weekly recall audit {% if audit_due < 0 %}not run yet{% else %}due (last run {{ audit_due }} days ago){% endif %}.</strong>
+Run <code>mailwarden jobs audit</code> to check 15 jobs this list left out, and see why.</p>{% endif %}
 {% if not has_profile %}<p class="empty">Build your profile (<code>mailwarden profile build</code>) to score and rank jobs.</p>
 {% elif not picks %}<p class="empty">No scored jobs yet. Scores fill in on each sync.</p>{% endif %}
 {% if picks %}<p class="meta">{{ picks|length }} job{{ "s" if picks|length != 1 }}{% if picks|length < n %}: that's every scored candidate in the window{% endif %}.</p>{% endif %}

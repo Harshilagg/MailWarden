@@ -248,6 +248,22 @@ wrote it, comments included. These sections are yours to edit:
 details. `build` refuses to write the file if it would include an email address, a
 phone number, a link or your name.
 
+### Matching policy
+
+`<home>/config/matching.yaml` is the single place for matching rules: experience
+levels, hard exclusions, soft penalties, stack families with an evidence project each,
+skills to ignore when picking a project, and the scoring rubric given to the model.
+`profile.yaml` keeps who you are (skills, projects, education, highlights).
+
+```sh
+.venv/bin/mailwarden matching init    # create it from the template (never overwrites)
+.venv/bin/mailwarden matching check   # validate it and list likely mistakes
+```
+
+Parsing is strict, so a misspelt key is an error rather than a silently ignored rule.
+`check` warns about evidence projects that aren't in `profile.yaml`, keywords that
+appear in two families, and exclusions that would always filter a family.
+
 ### Prefilter
 
 Before scoring, a local prefilter marks jobs that are clearly not for you:
@@ -357,6 +373,32 @@ The report shows:
 
 Use it to adjust `profile.yaml`. Your labels stay in the encrypted database.
 
+### Recall audit (weekly)
+
+Calibration checks the scores; the recall audit checks what the ranking **hides**:
+
+```sh
+.venv/bin/mailwarden jobs audit           # 15 jobs from outside Apply today: would you apply?
+.venv/bin/mailwarden jobs audit --report  # missed-good counts, reasons and suggested changes
+```
+
+The audit shows jobs that are *not* in Apply today, one at a time: about 6 filtered,
+6 ranked lower, and 3 left out for other reasons (expired, outside the Apply today
+window, not scored yet). Each shows the title, company, score and score type, and the
+filter reason if any. Answer `y` (I'd apply), `n`, `s` (skip) or `q`. Jobs you've
+audited are never shown again.
+
+For every `y`, it shows exactly why the job was left out: the prefilter rule, expiry,
+the window, the role-family limit, its rank against the cutoff (including ties), the
+title-only score, a score cap, or low skill weights. Each reason comes with the change
+that would have surfaced the job, such as "profile.yaml: add 'Pune' to locations" or
+"config: raise [job_alerts] apply_today_days (now 3)".
+
+The report shows audited and missed-good counts for the last 7 days and all time, the
+reasons grouped by how many missed jobs they explain, and the suggested changes. It
+changes nothing by itself. Answers are stored in the encrypted database, and Apply
+today reminds you when a week has passed since the last audit.
+
 ## Sender rules and the sensitivity gate
 
 `sender_rules.yaml` in the mailwarden home has four tiers. A domain rule also matches
@@ -453,12 +495,14 @@ the keyring. These are the settings you're most likely to change:
 | `mailwarden digest` | Build the digest now, and send the daily jobs notification |
 | `mailwarden regate [--days 7] [--apply] [--message ID]` | Re-check stored mail with the current rules (no LLM). `--apply` reprocesses what changed |
 | `mailwarden promote <address-or-domain> <tier>` | Move a sender to `priority`, `sensitive`, `ignore`, `job_alert` or `default` |
+| `mailwarden matching init` / `matching check` | Create the matching policy from the template / validate it |
 | `mailwarden profile init` | Create the profile folder |
 | `mailwarden profile build [--dry-run]` | Build `profile.yaml` from your CV and projects |
 | `mailwarden jobs prefilter [--show summary\|filtered\|kept\|all]` | Show which jobs the prefilter keeps or filters, and why |
 | `mailwarden jobs fetch [--limit N]` | Fetch job descriptions from the Greenhouse, Lever and Ashby APIs now |
 | `mailwarden jobs score [--limit N]` | Score jobs now |
 | `mailwarden jobs calibrate [--count 20] [--report]` | Label jobs good or bad, and see how well the scores agree |
+| `mailwarden jobs audit [--count 15] [--report]` | Weekly recall audit: would you apply to jobs Apply today left out, and why were they left out |
 | `mailwarden dashboard [--open]` | Run the dashboard in the foreground and print a one-time sign-in link |
 | `mailwarden open [--print-only]` | Open a one-time sign-in link to the running dashboard |
 | `mailwarden app [--path /jobs]` | Open the dashboard in its own window (macOS) |

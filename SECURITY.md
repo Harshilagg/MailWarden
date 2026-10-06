@@ -313,10 +313,11 @@ All paths are inside the mailwarden home (mode 700) unless noted otherwise.
 | Settings and sender rules (non-secret) | `config.toml` and `sender_rules.yaml` (mode 600), with `.bak` copies after `init --reset-rules` |
 | Message metadata and classifications | SQLCipher-encrypted database `data/mailwarden.db` (mode 600). No bodies and no subjects. SENSITIVE rows keep only the sender display name, received time, account and message id |
 | Applications (company, role, stage, history, company domains) | The encrypted database |
-| Jobs: postings, links, sources and "also on" sightings, JDs, fit scores, dismissals, calibration labels | The encrypted database |
+| Jobs: postings, links, sources and "also on" sightings, JDs, fit scores, dismissals, calibration labels, recall-audit answers | The encrypted database |
 | Database backups made before migrations | `data/mailwarden.db.<tag>.bak` (mode 600, still encrypted) |
 | Your CV and project notes | `profile/` (you copy them there and `chmod 600` them) |
 | Profile summary | `profile.yaml` and `profile.yaml.bak` (plaintext, with no contact details) |
+| Matching policy | `config/matching.yaml` (mode 600; plaintext preferences, no personal details) |
 | Logs | `logs/` (mode 600, scrubbed as described under [Logging](#logging)) |
 | Single-window hand-off socket and the run lock | `app.sock` (mode 600) and `jobs.lock` |
 | Background-job definitions | `schedule/` |

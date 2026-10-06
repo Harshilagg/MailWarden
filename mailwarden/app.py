@@ -108,6 +108,12 @@ class App:
 
         return prof.load_existing(self.home)
 
+    def matching_policy(self):
+        """matching.yaml (None if not created yet). Raises PolicyError if it is invalid."""
+        from mailwarden import matching
+
+        return matching.load(self.home)
+
     def repository(self) -> Repository:
         return SQLCipherRepository.open(self.home / DB_RELATIVE_PATH, self.secrets, self.user_id)
 

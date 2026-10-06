@@ -349,12 +349,18 @@ def create_app(deps: DashboardDeps) -> FastAPI:
         except Exception:
             profile = None
         from mailwarden.core.ranking import role_family
+        from mailwarden.recall import audit_due
 
+        repo = deps.repo_factory()
+        try:
+            due = audit_due(repo, deps.user_id, deps.now()) if profile is not None else None
+        finally:
+            repo.close()
         picks = [{"job": j, "rank": info, "link": safe_link(j.link), "family": role_family(j.title)}
                  for j, info in _apply_picks(profile)]
         return render("apply.html", request, picks=picks, n=deps.apply_today_count, has_profile=profile is not None,
                       watchlist=deps.watchlist, days=deps.apply_today_days,
-                      family_pct=round(deps.max_family_share * 100))
+                      family_pct=round(deps.max_family_share * 100), audit_due=due)
 
     def _back(form: dict[str, str], job_id: int | None = None) -> RedirectResponse:
         if form.get("view") == "apply":

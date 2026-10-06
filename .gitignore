@@ -36,3 +36,6 @@ profile/
 profile.yaml
 profile.yaml.bak
 *.pdf
+
+# Matching policy (lives in the private mailwarden home; the repo copy is only a link)
+config/matching.yaml

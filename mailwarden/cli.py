@@ -136,6 +136,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         else:
             target = "the mailwarden app" if getattr(notifier, "_click_target", "") == "app" else "your browser"
             print(f"notifications:   {notifier.backend}, clicks open {target}")
+    print(f"matching policy: {_matching_status(app)}")
     failures = 0
     for account in app.accounts.list(app.user_id):
         provider = app.provider_for(account)
@@ -549,6 +550,96 @@ def cmd_jobs(args: argparse.Namespace) -> int:
         finally:
             repo.close()
         return 0
+    if args.jobs_command == "audit":
+        return _jobs_audit(app, profile, count=args.count, report_only=args.report)
+    return 0
+
+
+def _jobs_audit(app: App, profile: dict, *, count: int, report_only: bool) -> int:
+    from mailwarden import profile as prof
+    from mailwarden.core.ranking import AppliedIndex
+    from mailwarden.core.recall import Context
+    from mailwarden.recall import print_report, run_session
+
+    ja = app.settings.job_alerts
+    now = dt.datetime.now(dt.UTC)
+    repo = app.repository()
+    try:
+        if not report_only:
+            ctx = Context(jobs=repo.list_jobs(app.user_id), profile=profile,
+                          effective_skills=prof.effective_skills(profile), now=now, n=ja.apply_today_count,
+                          watchlist=ja.watchlist, applied=AppliedIndex.from_applications(repo.list_applications(app.user_id)),
+                          expire_after_days=ja.expire_after_days, window_days=ja.apply_today_days,
+                          family_share=ja.max_family_share)
+            try:
+                run_session(repo, app.user_id, ctx, count=count, ask=input, out=sys.stdout)
+            except KeyboardInterrupt:
+                print("\nStopped; answers so far are saved.")
+        print_report(repo, app.user_id, sys.stdout, now=now)
+    finally:
+        repo.close()
+    return 0
+
+
+def _matching_status(app: App) -> str:
+    from mailwarden.core.policy import PolicyError
+    from mailwarden.matching import policy_path
+
+    try:
+        policy = app.matching_policy()
+    except PolicyError as e:
+        return f"INVALID: {e}"
+    if policy is None:
+        return f"none yet (run `mailwarden matching init` to create {policy_path(app.home)})"
+    projects = [str(p.get("name")) for p in ((app.profile() or {}).get("projects") or [])]
+    warnings = policy.check(projects)
+    return f"ok, {len(policy.stack_families)} stack families" + (f", {len(warnings)} warning(s): run "
+                                                                  "`mailwarden matching check`" if warnings else "")
+
+
+def cmd_matching(args: argparse.Namespace) -> int:
+    from mailwarden import matching
+    from mailwarden.core.policy import PolicyError
+
+    home = home_dir()
+    if args.matching_command == "init":
+        path, created = matching.init(home)
+        print(f"{'Created' if created else 'Already exists'}: {path}")
+        if created:
+            print("Set evidence_project for each stack family to one of your projects, then run "
+                  "`mailwarden matching check`.")
+        return 0
+    try:
+        policy = matching.load(home)
+    except PolicyError as e:
+        raise UsageError(str(e)) from None
+    if policy is None:
+        raise UsageError(f"no {matching.policy_path(home)} yet: run `mailwarden matching init`")
+    from mailwarden import profile as prof
+
+    profile = prof.load_existing(home)
+    projects = [str(p.get("name")) for p in ((profile or {}).get("projects") or [])]
+    e = policy.experience
+    print(f"{matching.policy_path(home)}: valid (fingerprint {policy.fingerprint()})")
+    print(f"experience: fresher when the minimum is <= {e.pass_max_min_years} years, stretch at "
+          f"{e.stretch_min_years} (at most {e.max_stretch_in_apply_today} in Apply today), too senior above; "
+          f"unknown -> {e.unknown_policy}")
+    print(f"  {len(e.fresher_signals)} fresher signals, {len(e.senior_signals)} senior signals")
+    print(f"hard exclusions: {len(policy.hard_exclusions.role_types)} role types, "
+          f"{len(policy.hard_exclusions.conditions)} conditions")
+    print(f"soft penalties: {', '.join(policy.soft_penalties.stacks) or 'none'} "
+          f"(-{policy.soft_penalties.rank_penalty:g} rank)")
+    print("stack families:")
+    for name, fam in policy.stack_families.items():
+        evidence = fam.evidence_project or "no evidence project"
+        print(f"  {name:<18} {len(fam.keywords):>2} keywords -> {evidence}")
+    print(f"scoring rubric: {len(policy.scoring_rubric)} lines (given to the scorer verbatim)")
+    if profile is None:
+        print("note: no profile.yaml yet, so evidence projects can't be checked")
+    warnings = policy.check(projects if profile is not None else None)
+    for w in warnings:
+        print(f"warning: {w}")
+    print("no warnings" if not warnings else f"{len(warnings)} warning(s)")
     return 0
 
 
@@ -647,7 +738,15 @@ def build_parser() -> argparse.ArgumentParser:
     jc = jb_sub.add_parser("calibrate", help="label jobs good/bad and see how well scores agree")
     jc.add_argument("--count", type=int, default=20, help="jobs to show (default 20)")
     jc.add_argument("--report", action="store_true", help="only print the agreement report")
+    ja_ = jb_sub.add_parser("audit", help="weekly recall audit: would you apply to jobs Apply today left out?")
+    ja_.add_argument("--count", type=int, default=15, help="jobs to show (default 15)")
+    ja_.add_argument("--report", action="store_true", help="only print the audit report")
     jb.set_defaults(func=cmd_jobs)
+    mt = sub.add_parser("matching", help="the matching policy (matching.yaml): create or check it")
+    mt_sub = mt.add_subparsers(dest="matching_command", required=True)
+    mt_sub.add_parser("init", help="create <home>/config/matching.yaml from the template (never overwrites)")
+    mt_sub.add_parser("check", help="validate matching.yaml and show what it says")
+    mt.set_defaults(func=cmd_matching)
     pf = sub.add_parser("profile", help="job-matching profile from your CV and project files (local only)")
     pf_sub = pf.add_subparsers(dest="profile_command", required=True)
     pf_sub.add_parser("init", help="create the private profile folder")

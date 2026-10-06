@@ -6,7 +6,7 @@ import datetime as dt
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from mailwarden.core.models import Account, Application, EmailMeta, JobPost, Stage, StoredJob
+from mailwarden.core.models import Account, Application, EmailMeta, JobAudit, JobPost, Stage, StoredJob
 
 
 class AccountRegistry(ABC):
@@ -106,6 +106,14 @@ class Repository(ABC):
 
     @abstractmethod
     def list_labels(self, user_id: str) -> list[tuple[int, str, float | None]]: ...
+
+    # recall audits (jobs outside Apply today you would / wouldn't apply to, and why they were left out)
+    @abstractmethod
+    def save_audit(self, user_id: str, job_id: int, answer: str, findings: list[dict], *, score: float | None,
+                   level: str | None, at: dt.datetime) -> None: ...
+
+    @abstractmethod
+    def list_audits(self, user_id: str) -> list[JobAudit]: ...
 
     # small per-user state (e.g. when the daily job notice was last sent)
     @abstractmethod
