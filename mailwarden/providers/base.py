@@ -12,8 +12,12 @@ class ProviderError(RuntimeError):
     pass
 
 
+class MessageGone(ProviderError):
+    """The message no longer exists (deleted, or moved out of reach): never retry it."""
+
+
 class ReauthRequired(ProviderError):
-    """The stored grant is no longer valid; the user must run add-account again."""
+    """The stored grant is no longer valid; the user must run `mailwarden reauth <account>`."""
 
 
 @dataclass(frozen=True)

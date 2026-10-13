@@ -31,10 +31,17 @@ class _TooDeep(ValueError):
     pass
 
 
+_PAGE_CHROME = frozenset("nav header footer form aside button select dialog".split())
+_MAIN = frozenset(("main", "article"))
+
+
 class _Extractor(HTMLParser):
-    def __init__(self) -> None:
+    def __init__(self, *, page: bool = False) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
+        self.main_parts: list[str] = []  # page mode: text inside <main>/<article>
+        self._page = page
+        self._main_count = 0
         self._stack: list[tuple[str, bool]] = []
         self._hidden_count = 0  # O(1) "inside a hidden element?" instead of scanning the stack
 
@@ -49,6 +56,7 @@ class _Extractor(HTMLParser):
         a = dict(attrs)
         hides = (
             tag in _SKIP
+            or (self._page and tag in _PAGE_CHROME)
             or "hidden" in a
             or bool(_HIDDEN_STYLE.search(a.get("style") or ""))
         )
@@ -56,6 +64,8 @@ class _Extractor(HTMLParser):
             raise _TooDeep("HTML nesting too deep")
         self._stack.append((tag, hides))
         self._hidden_count += hides
+        if self._page and tag in _MAIN:
+            self._main_count += 1
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in _BLOCK and not self._hidden():
@@ -66,6 +76,8 @@ class _Extractor(HTMLParser):
         for i in range(len(self._stack) - 1, lowest - 1, -1):
             if self._stack[i][0] == tag:
                 self._hidden_count -= sum(h for _, h in self._stack[i:])
+                if self._page:
+                    self._main_count -= sum(1 for t, _ in self._stack[i:] if t in _MAIN)
                 del self._stack[i:]
                 break
         if tag in _BLOCK and not self._hidden():
@@ -74,6 +86,8 @@ class _Extractor(HTMLParser):
     def handle_data(self, data: str) -> None:
         if not self._hidden():
             self.parts.append(data)
+            if self._main_count > 0:
+                self.main_parts.append(data)
 
 
 def _normalise(text: str) -> str:
@@ -93,6 +107,18 @@ def html_to_text(html: str) -> str:
     except Exception as e:
         raise HtmlParseError("could not parse HTML body") from e
     return _normalise("".join(parser.parts))
+
+
+def page_text(html: str) -> tuple[str, str]:
+    """A web page's (main content, whole page) text, without navigation, header, footer, forms or
+    hidden elements. Main content is what's inside <main>/<article> ('' if the page has none)."""
+    parser = _Extractor(page=True)
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception as e:
+        raise HtmlParseError("could not parse HTML page") from e
+    return _normalise("".join(parser.main_parts)), _normalise("".join(parser.parts))
 
 
 _LOOKS_LIKE_HTML = re.compile(r"<\s*(?:html|body|div|table|p|br|span|img)\b[^>]*>", re.IGNORECASE)

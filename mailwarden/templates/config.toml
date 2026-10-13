@@ -80,8 +80,14 @@ max_family_share = 0.25
 expire_after_days = 14
 # Fetch job descriptions automatically for candidates on Greenhouse, Lever or Ashby (public APIs).
 jd_auto_fetch = true
-# "Fetch job description" buttons (allowlisted hiring systems only). Opt-in: set true to enable.
-jd_button_fetch = false
+# Job pages on other sites (see SECURITY.md): "auto" = fetch on each sync for jobs that pass your
+# filters (paced, robots.txt honoured); "button" = only when you click "Fetch job description"; "off".
+jd_fetch = "auto"
+# Never fetched; the card offers a "Paste JD" box instead.
+jd_fetch_deny = ["linkedin.com", "indeed.com", "naukri.com", "glassdoor.com", "glassdoor.co.in"]
+jd_fetch_interval_seconds = 5
 max_jd_fetches_per_run = 30
 # Fit scores per run (one LLM call each).
 max_scores_per_run = 40
+# Fit scores per day, so scoring leaves the free daily LLM quota to your email. 0 = no cap.
+max_scores_per_day = 80

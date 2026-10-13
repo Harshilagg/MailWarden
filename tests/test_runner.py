@@ -215,3 +215,20 @@ def test_runner_notifies_through_notifier(repo):
     r.run([ACCOUNT])
     assert len(sent) == 1 and sent[0].company == "Acme" and sent[0].account == "personal"
     assert "pick a slot" not in sent[0].title().lower()
+
+
+def test_messages_deleted_in_gmail_are_dropped_not_retried_forever(repo):
+    from mailwarden.providers.base import MessageGone
+
+    class GoneProvider(Provider):
+        def get_message(self, account, message_id):
+            if message_id == "friend":
+                raise MessageGone("message no longer exists")
+            return super().get_message(account, message_id)
+
+    provider = GoneProvider(_messages())
+    provider.fail_ids = {"job"}  # a temporary error: retried next run
+    stats = runner(repo, provider, FakeLLM(INTERVIEW)).run([ACCOUNT])
+    assert stats.gone == 1 and stats.pending == 1
+    assert repo.list_pending("local", "personal", 10) == ["job"]
+

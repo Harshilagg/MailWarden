@@ -32,7 +32,7 @@ from mailwarden.security.fs import check_private, ensure_private_dir
 from mailwarden.security.secrets import SecretKeys, SecretStore
 from mailwarden.storage.base import ApplicationEvent, Repository
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # Columns added after v1: (name, SQL type). Applied with ALTER TABLE on open.
 _MESSAGE_COLUMNS_V2 = (
@@ -128,6 +128,14 @@ CREATE TABLE IF NOT EXISTS job_labels (
     labelled_at TEXT NOT NULL,
     PRIMARY KEY (user_id, job_id)
 );
+CREATE TABLE IF NOT EXISTS jd_fetch_log (
+    id INTEGER PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    host TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS jd_fetch_log_user ON jd_fetch_log (user_id, at);
 CREATE TABLE IF NOT EXISTS job_audits (
     id INTEGER PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -214,7 +222,10 @@ class SQLCipherRepository(Repository):
                 self._db.execute(f"ALTER TABLE messages ADD COLUMN {name} {sql_type}")
         if "urgent_since" not in existing:
             self._pin_currently_urgent()
+        stored = self._db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
         self._migrate_jobs()
+        if stored is not None and int(stored[0]) < 9:
+            self._tidy_jobs_v9()
         self._db.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
             "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
@@ -226,6 +237,7 @@ class SQLCipherRepository(Repository):
         ("jd_text", "TEXT"), ("jd_fetched_at", "TEXT"), ("score", "REAL"), ("score_level", "TEXT"),
         ("score_json", "TEXT"), ("score_hash", "TEXT"), ("scored_at", "TEXT"),
         ("source_type", "TEXT"), ("source_name", "TEXT"), ("experience_check", "TEXT"),
+        ("applied_at", "TEXT"),
     )
 
     def _migrate_jobs(self) -> None:
@@ -238,6 +250,37 @@ class SQLCipherRepository(Repository):
                 self._db.execute(f"ALTER TABLE job_postings ADD COLUMN {name} {sql_type}")
         if needs_v7:
             self._rekey_jobs_v7()
+
+    def _tidy_jobs_v9(self) -> None:
+        """Readable requisition titles, and companies from ATS links / careers senders, for stored jobs."""
+        from mailwarden.core.job_alerts import dedup_key
+        from mailwarden.core.models import JobPost
+        from mailwarden.core.sources import company_from_link, company_from_source, tidy_requisition_title
+
+        rows = self._db.execute(
+            "SELECT id, user_id, title, company, location, link, listing_details, dedup_key, source_type, "
+            "source_name, sender FROM job_postings").fetchall()
+        updates = []
+        for jid, uid, title, company, location, link, details, key, stype, sname, sender in rows:
+            new_title, city = tidy_requisition_title(title)
+            new_company = company or company_from_link(link) or company_from_source(stype, sname)
+            new_location = location or city
+            if (new_title, new_company, new_location) == (title, company, location):
+                continue
+            if new_title != title and "_" in title and f"Original title: {title}" not in (details or ""):
+                details = " · ".join(filter(None, (details, f"Original title: {title}")))[:500]
+            new_key = dedup_key(JobPost(title=new_title, company=new_company, location=new_location, link=link),
+                                sender)
+            updates.append((jid, uid, new_title, new_company, new_location, details, key, new_key))
+        if not updates:
+            return
+        self._backup("before-v9")
+        for jid, uid, title, company, location, details, key, new_key in updates:
+            taken = self._db.execute("SELECT 1 FROM job_postings WHERE user_id = ? AND dedup_key = ? AND id != ?",
+                                     (uid, new_key, jid)).fetchone()
+            self._db.execute(
+                "UPDATE job_postings SET title = ?, company = ?, location = ?, listing_details = ?, dedup_key = ? "
+                "WHERE id = ?", (title, company, location, details, key if taken else new_key, jid))
 
     def _backup(self, tag: str) -> None:
         """Copy the (encrypted) database file before a migration that merges rows."""
@@ -414,6 +457,11 @@ class SQLCipherRepository(Repository):
             [(user_id, account, mid, now) for mid in message_ids],
         )
 
+    def drop_pending(self, user_id: str, account: str, message_id: str) -> None:
+        """Forget a pending id that can never be processed (the message is gone)."""
+        self._db.execute("DELETE FROM messages WHERE user_id = ? AND account = ? AND message_id = ? "
+                         "AND status = 'pending'", (user_id, account, message_id))
+
     def list_pending(self, user_id: str, account: str, limit: int) -> list[str]:
         rows = self._db.execute(
             "SELECT message_id FROM messages WHERE user_id = ? AND account = ? AND status = 'pending' "
@@ -537,7 +585,7 @@ class SQLCipherRepository(Repository):
     _JOB_SELECT = ("SELECT id, title, company, location, link, sender, account, message_id, received_at, dismissed_at, "
                    "listing_details, jd_status, jd_reason, jd_source, jd_text, jd_fetched_at, score, score_level, score_json, "
                    "score_hash, source_type, source_name, (SELECT max(s.seen_at) FROM job_sightings s "
-                   "WHERE s.user_id = job_postings.user_id AND s.job_id = job_postings.id), experience_check FROM job_postings")
+                   "WHERE s.user_id = job_postings.user_id AND s.job_id = job_postings.id), experience_check, applied_at FROM job_postings")
 
     def _row_to_job(self, user_id: str, r: tuple) -> StoredJob:
         detail = json.loads(r[18]) if r[18] else {}
@@ -551,6 +599,7 @@ class SQLCipherRepository(Repository):
             best_project=detail.get("best_project"), why=detail.get("why"), score_hash=r[19],
             source_type=r[20], source_name=r[21],
             last_seen_at=dt.datetime.fromisoformat(r[22]) if r[22] else None, experience_check=r[23],
+            applied_at=dt.datetime.fromisoformat(r[24]) if r[24] else None,
             also_on=tuple(n for n in self._sightings(user_id, r[0]) if n and n != r[21]),
         )
 
@@ -600,6 +649,24 @@ class SQLCipherRepository(Repository):
         cur = self._db.execute("UPDATE job_postings SET experience_check = ? WHERE user_id = ? AND id = ?",
                                (value, user_id, job_id))
         return cur.rowcount > 0
+
+    def mark_applied(self, user_id: str, job_id: int, at: dt.datetime | None) -> bool:
+        """You applied to this job (None: undo). Applied jobs leave Apply today at once."""
+        cur = self._db.execute("UPDATE job_postings SET applied_at = ? WHERE user_id = ? AND id = ?",
+                               (_iso(at) if at else None, user_id, job_id))
+        return cur.rowcount > 0
+
+    def record_fetch(self, user_id: str, host: str, outcome: str, at: dt.datetime) -> None:
+        self._db.execute("INSERT INTO jd_fetch_log (user_id, host, outcome, at) VALUES (?, ?, ?, ?)",
+                         (user_id, host.lower()[:200], outcome[:40], _iso(at)))
+        self._db.execute("DELETE FROM jd_fetch_log WHERE user_id = ? AND at < ?",
+                         (user_id, _iso(at - dt.timedelta(days=90))))
+
+    def fetch_stats(self, user_id: str, since: dt.datetime) -> list[tuple[str, str, int]]:
+        """(host, outcome, count) since ``since``."""
+        return [tuple(r) for r in self._db.execute(
+            "SELECT host, outcome, count(*) FROM jd_fetch_log WHERE user_id = ? AND at >= ? GROUP BY host, outcome",
+            (user_id, _iso(since))).fetchall()]
 
     def dismiss_job(self, user_id: str, job_id: int) -> bool:
         cur = self._db.execute("UPDATE job_postings SET dismissed_at = ? WHERE user_id = ? AND id = ?",
@@ -671,6 +738,20 @@ class SQLCipherRepository(Repository):
             return None
         return dt.datetime.fromisoformat(row[0]), dt.datetime.fromisoformat(row[1]), row[2]
 
+    def latest_nonempty_digest(self, user_id: str) -> tuple[dt.datetime, dt.datetime, str] | None:
+        """The most recent stored digest that covered at least one email (None if none did)."""
+        from mailwarden.core.overview import Digest
+
+        rows = self._db.execute(
+            "SELECT generated_at, period_start, body_json FROM digests WHERE user_id = ? ORDER BY generated_at DESC",
+            (user_id,),
+        ).fetchall()
+        for row in rows:
+            digest = Digest.from_json(row[2])
+            if digest.total or digest.urgent:
+                return dt.datetime.fromisoformat(row[0]), dt.datetime.fromisoformat(row[1]), row[2]
+        return None
+
     # -- applications -------------------------------------------------------
 
     def _row_to_app(self, user_id: str, r: tuple) -> Application:
@@ -700,6 +781,23 @@ class SQLCipherRepository(Repository):
             untitled = [r for r in rows if r[6] == ""]
             return self._row_to_app(user_id, untitled[0]) if untitled else None
         return self._row_to_app(user_id, rows[0])
+
+    def remove_application_event(self, user_id: str, message_id: str) -> None:
+        """Undo one event (e.g. an "Applied" click). An application left with no events is deleted."""
+        rows = self._db.execute("SELECT application_id FROM application_events WHERE user_id = ? AND message_id = ?",
+                                (user_id, message_id)).fetchall()
+        for (app_id,) in rows:
+            self._db.execute("DELETE FROM application_events WHERE user_id = ? AND application_id = ? "
+                             "AND message_id = ?", (user_id, app_id, message_id))
+            left = self._db.execute("SELECT count(*) FROM application_events WHERE application_id = ?",
+                                    (app_id,)).fetchone()[0]
+            if left == 0:
+                self._db.execute("DELETE FROM applications WHERE id = ?", (app_id,))
+                continue
+            ids = json.loads(self._db.execute("SELECT source_message_ids FROM applications WHERE id = ?",
+                                              (app_id,)).fetchone()[0])
+            self._db.execute("UPDATE applications SET source_message_ids = ? WHERE id = ?",
+                             (json.dumps([i for i in ids if i != message_id]), app_id))
 
     def upsert_application(
         self,

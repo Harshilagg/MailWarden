@@ -23,9 +23,10 @@ from mailwarden.core.classify.base import BackendUnavailable, LLMBackend
 from mailwarden.core.models import Account, Category, EmailMeta, GateDecision, MessageStatus, Tier
 from mailwarden.core.pipeline import Pipeline, Triage
 from mailwarden.core.reasons import friendly_reason
+from mailwarden.core import sync_health
 from mailwarden.core.sender_rules import SenderRules
 from mailwarden.delivery.base import JobAlert, Notifier
-from mailwarden.providers.base import MailProvider, ProviderError
+from mailwarden.providers.base import MailProvider, MessageGone, ProviderError, ReauthRequired
 from mailwarden.storage.base import Repository
 
 log = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ class RunStats:
     classified: int = 0
     unclassified: int = 0
     pending: int = 0
+    gone: int = 0  # deleted in Gmail before they could be read
     job: int = 0
     near_empty: int = 0
     jobs_found: int = 0
@@ -65,6 +67,7 @@ class Runner:
         max_body_chars: int,
         max_per_run: int,
         notifier: Notifier | None = None,
+        clock: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.UTC),
     ) -> None:
         self._user_id = user_id
         self._repo = repo
@@ -74,6 +77,7 @@ class Runner:
         self._max_body_chars = max_body_chars
         self._max_per_run = max_per_run
         self._notifier = notifier
+        self._clock = clock
         self._llm_ok = True
 
     def _pipeline(self) -> Pipeline:
@@ -100,6 +104,12 @@ class Runner:
             except ProviderError as e:
                 log.error("account %s failed: %s", account.name, e)
                 stats.accounts_failed.append(account.name)
+                reauth = isinstance(e, ReauthRequired)
+                if sync_health.record_failure(self._repo, self._user_id, account.name, str(e), reauth=reauth,
+                                              now=self._clock()) and self._notifier is not None:
+                    self._notifier.notify_text(f"mailwarden can't read {account.name}: sign in again", "/")
+            else:
+                sync_health.record_ok(self._repo, self._user_id, account.name, self._clock())
         if stats.near_empty:
             log.debug("%d messages had an empty or near-empty body after extraction", stats.near_empty)
         return stats
@@ -147,6 +157,10 @@ class Runner:
         uid = self._user_id
         try:
             msg = provider.get_message(account, message_id)
+        except MessageGone:
+            self._repo.drop_pending(uid, account.name, message_id)  # deleted in Gmail: retrying can't help
+            stats.gone += 1
+            return
         except ProviderError:
             self._defer(account, message_id, stats)
             return
@@ -261,10 +275,13 @@ class Runner:
             return
         if not posts:
             return
-        from mailwarden.core.sources import classify_source
+        from mailwarden.core.sources import classify_source, company_from_source
 
         sender = triage.sender or msg.sender_name
         source_type, source_name = classify_source(msg.sender_address, sender)
+        fallback = company_from_source(source_type, source_name)  # a company's own careers alert
+        if fallback:
+            posts = [p if p.company else p.model_copy(update={"company": fallback}) for p in posts]
         stats.jobs_found += len(posts)
         stats.jobs_new += self._repo.save_jobs(
             self._user_id, account=account.name, message_id=msg.message_id, sender=sender,

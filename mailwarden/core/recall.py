@@ -18,7 +18,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from mailwarden.core.expiry import expired_reason
+from mailwarden.core.expiry import expired_reason, reference_time
 from mailwarden.core.fit import CS_DEGREE, PRELIMINARY_CAP
 from mailwarden.core.models import StoredJob
 from mailwarden.core.policy import MatchingPolicy
@@ -60,9 +60,11 @@ class Context:
     window_days: int = 0
     family_share: float = 0.0
     picks: list[tuple[StoredJob, RankInfo]] = field(init=False)
+    ref: dt.datetime = field(init=False)  # "now" for windows and expiry: the newest alert (see expiry)
     uncapped_ids: set[int] = field(init=False)
 
     def __post_init__(self) -> None:
+        self.ref = reference_time(self.jobs, self.now)
         kw = dict(n=self.n, now=self.now, watchlist=self.watchlist, applied=self.applied,
                   expire_after_days=self.expire_after_days, new_within_days=self.window_days)
         self.picks = apply_today(self.jobs, self.policy, max_family_share=self.family_share, **kw)
@@ -88,7 +90,7 @@ class Context:
 def stratum(job: StoredJob, ctx: Context) -> str:
     if ctx.policy is not None and prefilter_job(job, ctx.policy).excluded:
         return "filtered"
-    if (job.score is not None and not expired_reason(job, now=ctx.now, after_days=ctx.expire_after_days)
+    if (job.score is not None and not expired_reason(job, now=ctx.ref, after_days=ctx.expire_after_days)
             and not _outside_window(job, ctx)):
         return "low_rank"
     return "other"
@@ -118,7 +120,7 @@ def sample(ctx: Context, *, audited: set[int], count: int, rng: random.Random) -
 # --- explaining one job ----------------------------------------------------------------------
 
 def _outside_window(job: StoredJob, ctx: Context) -> bool:
-    return ctx.window_days > 0 and ctx.now - job.received_at > dt.timedelta(days=ctx.window_days)
+    return ctx.window_days > 0 and ctx.ref - job.received_at > dt.timedelta(days=ctx.window_days)
 
 
 def _filter_finding(reason: str, policy: MatchingPolicy | None) -> Finding:
@@ -179,7 +181,7 @@ def explain(job: StoredJob, ctx: Context) -> list[Finding]:
     verdict = prefilter_job(job, ctx.policy) if ctx.policy is not None else None
     if verdict is not None:  # the prefilter decides first: filtered jobs are never scored
         found += [_filter_finding(r, ctx.policy) for r in verdict.reasons]
-    reason = expired_reason(job, now=ctx.now, after_days=ctx.expire_after_days)
+    reason = expired_reason(job, now=ctx.ref, after_days=ctx.expire_after_days)
     if reason:
         if job.jd_status == "closed" or "closed" in reason:
             found.append(Finding("expired", f"expired: {reason}", None, "closed"))
@@ -188,7 +190,7 @@ def explain(job: StoredJob, ctx: Context) -> list[Finding]:
                                  f"config: raise [job_alerts] expire_after_days (now {ctx.expire_after_days})",
                                  "expired_age"))
     if _outside_window(job, ctx):
-        days = (ctx.now - job.received_at).days
+        days = (ctx.now - job.received_at).days  # true age; the window itself is measured from the newest alert
         found.append(Finding("window", f"first seen {days} days ago; Apply today takes the last {ctx.window_days}",
                              f"config: raise [job_alerts] apply_today_days (now {ctx.window_days})", "window"))
     if job.score is None and not found:  # a current candidate the scorer hasn't reached yet

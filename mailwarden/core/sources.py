@@ -187,3 +187,83 @@ def location_key(location: str | None) -> str:
             return city
     words = [w for w in text.split() if w not in ("india", "in", "karnataka", "haryana", "maharashtra", "hybrid")]
     return " ".join(words[:3])
+
+
+# --- requisition-style titles ("2026_Java_Eclipse Development_BAN") ---------------------------
+
+_LOCATION_CODES = {
+    "BAN": "Bengaluru", "BLR": "Bengaluru", "BNG": "Bengaluru", "HYD": "Hyderabad", "PUN": "Pune", "PNQ": "Pune",
+    "CHN": "Chennai", "MAA": "Chennai", "MUM": "Mumbai", "BOM": "Mumbai", "DEL": "Delhi", "NCR": "Delhi NCR",
+    "GGN": "Gurugram", "GUR": "Gurugram", "NOI": "Noida", "NOIDA": "Noida", "KOL": "Kolkata", "CCU": "Kolkata",
+    "AHM": "Ahmedabad", "KOC": "Kochi", "TVM": "Trivandrum",
+}
+_YEAR_PREFIX = re.compile(r"^(?:FY\s?\d{2}|(?:FY\s?)?20\d{2})\s*[_\-:|]+\s*", re.IGNORECASE)
+_CODE_SUFFIX = re.compile(r"\s*_\s*([A-Za-z]{2,5}|V\d{1,2}|R-?\d{3,}|JR-?\d{3,}|REQ-?\d{3,}|\d{4,})\s*$")
+
+
+def tidy_requisition_title(title: str) -> tuple[str, str | None]:
+    """Readable title from an internal requisition name, and a city from a location code if any.
+
+    '2026_Java_Eclipse Development_BAN' -> ('Java Eclipse Development', 'Bengaluru');
+    'Junior Software Developer_V4' -> ('Junior Software Developer', None).
+    Titles without underscores or a year prefix are returned unchanged.
+    """
+    raw = title.strip()
+    if "_" not in raw and not _YEAR_PREFIX.match(raw):
+        return raw, None
+    text, city = _YEAR_PREFIX.sub("", raw), None
+    for _ in range(3):  # trailing codes: location, version, requisition id
+        m = _CODE_SUFFIX.search(text)
+        if not m:
+            break
+        code = m.group(1)
+        if code.upper() in _LOCATION_CODES:
+            city = city or _LOCATION_CODES[code.upper()]
+        elif not re.fullmatch(r"V\d{1,2}|R-?\d+|JR-?\d+|REQ-?\d+|\d{4,}", code, re.IGNORECASE):
+            break  # a real word ("_Backend"): keep it
+        text = text[: m.start()]
+    text = re.sub(r"\s*_+\s*", " ", text)
+    text = re.sub(r"\s{2,}", " ", text).strip(" -|:")
+    return (text or raw), city
+
+
+# --- company fallbacks ---------------------------------------------------------------------------
+
+def company_from_link(link: str | None) -> str | None:
+    """The company slug in a hiring-system link (Greenhouse, Lever, Ashby, Workday, SmartRecruiters)."""
+    if not link:
+        return None
+    from urllib.parse import parse_qsl, urlsplit
+
+    from mailwarden.core.jd import unwrap
+
+    parts = urlsplit(unwrap(link))
+    host = (parts.hostname or "").lower()
+    path = [p for p in parts.path.split("/") if p]
+    slug = None
+    if host.endswith("greenhouse.io"):
+        query = dict(parse_qsl(parts.query))
+        if query.get("for"):
+            slug = query["for"]
+        elif len(path) >= 3 and path[0] == "jobs":  # my.greenhouse.io/jobs/<board>/<id>
+            slug = path[1]
+        elif len(path) >= 3 and path[-2] == "jobs":
+            slug = path[-3]
+    elif host.endswith(("lever.co", "ashbyhq.com", "smartrecruiters.com")) and path:
+        slug = path[0]
+    elif host.endswith(("myworkdayjobs.com", "myworkdaysite.com")):
+        slug = host.split(".")[0]
+    if not slug or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_\-]{1,60}", slug):
+        return None
+    return display_company(slug.replace("-", " ").replace("_", " "))
+
+
+def company_from_source(source_type: str | None, source_name: str | None) -> str | None:
+    """A company's own careers email, or a hiring-system alert sent for one company ("Bayer (jobs2web)")."""
+    if not source_name:
+        return None
+    if source_type == "company_careers":
+        return source_name
+    if source_type == "ats_feed" and source_name.endswith(")") and " (" in source_name:
+        return source_name.rsplit(" (", 1)[0]
+    return None

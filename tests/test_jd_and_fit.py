@@ -62,11 +62,12 @@ def test_plan_ats(url, kind, api):
 @pytest.mark.parametrize(
     "url, words",
     [
-        ("https://www.linkedin.com/comm/jobs/view/111?trk=x", "LinkedIn pages can't be fetched"),
-        ("https://www.naukri.com/job-listings-backend-9", "Naukri pages"),
-        ("https://internshala.com/internship/detail/x", "Internshala pages"),
-        ("https://click.mailer.example.com/ls/click?upn=abc", "click-tracking link: open in browser, then paste"),
-        ("https://jobs.bayer.com/job/Bengaluru-Data-Engineer/101/", "isn't on the fetch list"),
+        ("https://www.linkedin.com/comm/jobs/view/111?trk=x", "LinkedIn is on the do-not-fetch list"),
+        ("https://www.naukri.com/job-listings-backend-9", "Naukri is on the do-not-fetch list"),
+        ("https://in.indeed.com/viewjob?jk=1", "Indeed is on the do-not-fetch list"),
+        ("https://www.glassdoor.co.in/job-listing/x", "Glassdoor is on the do-not-fetch list"),
+        ("https://click.mailer.example.com/ls/click?upn=abc", "would tell the sender you clicked"),
+        ("https://links.wellfound.com/s/c/u-pbpcjnSmnnVF1zeF95zYZ", "click-tracking link"),
         ("https://www.linkedin.com/comm/jobs/unsubscribe?x=1", "never followed"),
         ("https://boards.greenhouse.io/acme/email-settings", "never followed"),
         ("https://jobs.lever.co/acme/feedback", "never followed"),
@@ -115,49 +116,102 @@ def test_paste():
     assert r.status == "ok" and r.source == "paste" and "https://" not in r.text
 
 
-# --- the fetch session: allowlist + SSRF --------------------------------------------------
+def test_any_other_site_is_a_page_with_tracking_removed():
+    p = jd.plan("http://jobsearch.alstom.com/job/Bangalore-ITOPs-Engineer-KA/1384469333/?from=email&refid=3472"
+                "&utm_source=J2WEmail&source=2&eid=6901&gclid=x&fbclid=y&keep=1")
+    assert p.kind == "page" and p.url == "http://jobsearch.alstom.com/job/Bangalore-ITOPs-Engineer-KA/1384469333/?keep=1"
+    assert jd.plan("https://jobs.bayer.com/job/x/101/").kind == "page"
+    assert jd.plan("https://jobs.example.com/x", denied=("example.com",)).kind == "none"  # your own denylist
+
+
+def test_wrapped_tracking_links_are_unwrapped_without_visiting_the_tracker():
+    hirist = ("https://postoffice.hirist.tech/CL0/https:%2F%2Fwww.hirist.tech%2Fj%2Fwobot-backend-1677985"
+              "%3Fref=ep_ml%26utm_source=email/1/0100019a/abc=")
+    assert jd.unwrap(hirist) == "https://www.hirist.tech/j/wobot-backend-1677985?ref=ep_ml&utm_source=email"
+    p = jd.plan(hirist)
+    assert p.kind == "page" and p.url == "https://www.hirist.tech/j/wobot-backend-1677985"
+    assert jd.plan("https://click.example.com/r?url=https%3A%2F%2Fcareers.acme.com%2Fjob%2F7").url == \
+        "https://careers.acme.com/job/7"
+    wrapped_unsub = "https://et.example.com/CL0/https:%2F%2Fexample.com%2Funsubscribe%3Fx=1/1/abc"
+    assert "never followed" in jd.plan(wrapped_unsub).why_not
+
+
+def test_mygreenhouse_links_use_the_greenhouse_api():
+    p = jd.plan("https://my.greenhouse.io/jobs/66degrees/6222445004?gh_src=myjobs.greenhouse")
+    assert p.kind == "greenhouse" and p.url == "https://boards-api.greenhouse.io/v1/boards/66degrees/jobs/6222445004"
+
+
+def test_pages_need_300_characters_of_real_text():
+    menu = "<html><body><nav>Jobs Careers About</nav><main><h1>Backend Engineer</h1><p>Apply</p></main></body></html>"
+    assert jd.from_page(menu) == ""
+    assert jd.acquire(jd.Plan("page", "https://x.example.com/j"), get_json=None,
+                      get_page=lambda u: (200, menu)).reason == jd.UNREADABLE
+    body = "<p>" + "You will build backend services and own their reliability in production. " * 6 + "</p>"
+    page = (f"<html><nav>{'Home About Login ' * 50}</nav><main><h1>Backend Engineer</h1>"
+            f"<h2>Requirements</h2>{body}</main><footer>{'Cookie policy ' * 40}</footer></html>")
+    text = jd.from_page(page)
+    assert "own their reliability" in text and "Cookie policy" not in text and "Login" not in text
+
+
+# --- the job-page session: denylist + SSRF ----------------------------------------------------
 
 def _resolver(ip):
     return lambda host, port, type=None: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port))]
 
 
-def test_button_session_only_allowlisted_sites_and_redirects():
-    s = PublicWebSession(jd.BUTTON_FETCH_SUFFIXES, resolve=_resolver("93.184.216.34"))
+def test_page_session_denylist_redirects_and_headers():
+    s = PublicWebSession(("linkedin.com",), resolve=_resolver("93.184.216.34"))
     calls = []
 
     def handler(req):
-        calls.append(req.url)
-        if "myworkdayjobs.com" in req.url:
-            return 302, b"", {"Location": "https://evil.example.com/steal"}
+        calls.append((req.url, dict(req.headers)))
+        if "careers.acme.com" in req.url:
+            return 302, b"", {"Location": "https://www.linkedin.com/jobs/view/1"}
+        if "hop" in req.url:
+            n = int(req.url.rsplit("/", 1)[1])
+            return 302, b"", {"Location": f"https://hop.example.com/{n + 1}"}
         return 200, b"<html></html>", {"content-type": "text/html"}
 
     mount(s, FakeTransport(handler))
-    with pytest.raises(PublicFetchBlocked, match="not on the job-description fetch list"):
-        s.get("https://www.linkedin.com/jobs/view/1")
-    with pytest.raises(PublicFetchBlocked, match="not on the job-description fetch list"):
-        s.get("https://acme.wd5.myworkdayjobs.com/x")  # redirect leaves the allowlist
-    assert all("evil" not in c for c in calls)
+    with pytest.raises(PublicFetchBlocked, match="do-not-fetch list"):
+        s.get("https://in.linkedin.com/jobs/view/1")
+    with pytest.raises(PublicFetchBlocked, match="do-not-fetch list"):
+        s.get("https://careers.acme.com/job/1")  # a redirect onto the denylist
+    with pytest.raises(Exception, match="redirects"):
+        s.get("https://hop.example.com/0")  # at most 5 redirects
     with pytest.raises(PublicFetchBlocked):
-        s.post("https://boards.greenhouse.io/x", data={})
+        s.post("https://careers.acme.com/x", data={})
+    headers = calls[0][1]
+    assert headers["Accept"] == "text/html" and headers["User-Agent"].startswith("mailwarden/")
+    assert "Cookie" not in headers and "Mozilla" not in headers["User-Agent"]
 
 
-def test_button_session_blocks_private_addresses():
-    s = PublicWebSession(jd.BUTTON_FETCH_SUFFIXES, resolve=_resolver("127.0.0.1"))
+def test_page_session_blocks_private_addresses_on_every_hop():
+    s = PublicWebSession((), resolve=_resolver("10.0.0.5"))
     mount(s, FakeTransport(lambda r: (200, b"", {})))
     with pytest.raises(PublicFetchBlocked, match="private or internal"):
-        s.get("https://acme.greenhouse.io/x")
+        s.get("https://careers.acme.com/x")
 
 
-@pytest.mark.parametrize("url", ["http://acme.greenhouse.io/x", "https://acme.greenhouse.io:8765/x",
-                                 "https://127.0.0.1/x", "https://user:pw@acme.greenhouse.io/"])
+@pytest.mark.parametrize("url", ["https://acme.greenhouse.io:8765/x", "http://acme.example.com:8080/x",
+                                 "ftp://acme.example.com/x", "https://127.0.0.1/x", "https://[::1]/x",
+                                 "https://user:pw@acme.greenhouse.io/", "https://printer.local/x"])
 def test_check_public_url_rejects(url):
     with pytest.raises(PublicFetchBlocked):
         check_public_url(url, resolve=_resolver("93.184.216.34"))
 
 
-def test_session_requires_an_allowlist():
-    with pytest.raises(ValueError):
-        PublicWebSession(())
+@pytest.mark.parametrize("ip", ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254",
+                                "224.0.0.1", "100.64.0.1", "::1", "fe80::1", "fc00::1", "ff02::1",
+                                "::ffff:192.168.1.1"])
+def test_check_public_url_rejects_internal_addresses(ip):
+    with pytest.raises(PublicFetchBlocked, match="private or internal"):
+        check_public_url("https://careers.acme.com/x", resolve=_resolver(ip))
+
+
+def test_check_public_url_accepts_http_and_https():
+    for url in ("http://careers.acme.com/x", "https://careers.acme.com/x", "https://careers.acme.com:443/x"):
+        check_public_url(url, resolve=_resolver("93.184.216.34"))
 
 
 # --- fit scores -----------------------------------------------------------------------------
@@ -289,10 +343,9 @@ def test_job_actions_paste_and_fetch(repo, tmp_path, secret_store):
     llm = FitLLM(_out())
     actions = JobActions(user_id="local", repo_factory=lambda: SQLCipherRepository(path, key),
                          profile_loader=lambda: PROFILE, effective_skills=lambda p: {"go": 0.9},
-                         llm_factory=lambda: llm, auto_json=lambda u: (200, {"content": JD_TEXT}),
-                         button_json=None, button_page=None)
+                         llm_factory=lambda: llm, auto_json=lambda u: (200, {"content": JD_TEXT}), pages=None)
     zeta = next(j for j in repo.list_jobs("local") if j.company == "Zeta")
-    assert "LinkedIn pages can't be fetched" in actions.fetch(zeta.id)
+    assert "LinkedIn is on the do-not-fetch list" in actions.fetch(zeta.id)
     assert "rescored" in actions.paste(zeta.id, JD_TEXT)
     zeta = next(j for j in repo.list_jobs("local") if j.company == "Zeta")
     assert zeta.jd_source == "paste" and zeta.score_level == "full"

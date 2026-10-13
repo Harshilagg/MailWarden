@@ -61,6 +61,10 @@ class Repository(ABC):
     def list_pending(self, user_id: str, account: str, limit: int) -> list[str]: ...
 
     @abstractmethod
+    def drop_pending(self, user_id: str, account: str, message_id: str) -> None:
+        """Forget a pending id that can never be processed (the message is gone)."""
+
+    @abstractmethod
     def list_email_meta(self, user_id: str, since: dt.datetime | None = None) -> list[EmailMeta]: ...
 
     @abstractmethod
@@ -88,6 +92,17 @@ class Repository(ABC):
     @abstractmethod
     def set_experience_check(self, user_id: str, job_id: int, value: str | None) -> bool:
         """Your quick check of a job's experience level: "fresher", "senior", or None to clear it."""
+
+    @abstractmethod
+    def mark_applied(self, user_id: str, job_id: int, at: dt.datetime | None) -> bool:
+        """You applied to this job (None: undo)."""
+
+    # job-description fetch outcomes per site (Insights)
+    @abstractmethod
+    def record_fetch(self, user_id: str, host: str, outcome: str, at: dt.datetime) -> None: ...
+
+    @abstractmethod
+    def fetch_stats(self, user_id: str, since: dt.datetime) -> list[tuple[str, str, int]]: ...
 
     @abstractmethod
     def dismiss_job(self, user_id: str, job_id: int) -> bool: ...
@@ -134,6 +149,10 @@ class Repository(ABC):
     def latest_digest(self, user_id: str) -> tuple[dt.datetime, dt.datetime, str] | None:
         """(generated_at, period_start, body_json) of the newest digest."""
 
+    @abstractmethod
+    def latest_nonempty_digest(self, user_id: str) -> tuple[dt.datetime, dt.datetime, str] | None:
+        """The most recent digest that covered at least one email."""
+
     # applications
     @abstractmethod
     def find_application(self, user_id: str, company_key: str, role_key: str) -> Application | None: ...
@@ -152,6 +171,10 @@ class Repository(ABC):
 
     @abstractmethod
     def list_applications(self, user_id: str) -> list[Application]: ...
+
+    @abstractmethod
+    def remove_application_event(self, user_id: str, message_id: str) -> None:
+        """Undo one event; an application left with no events is deleted."""
 
     @abstractmethod
     def application_history(self, user_id: str, company: str, role: str | None) -> list[ApplicationEvent]: ...

@@ -28,6 +28,18 @@ _CLOSED_TEXT = re.compile(
 )
 
 
+def reference_time(jobs, now: dt.datetime) -> dt.datetime:
+    """The "now" for freshness: the newest alert sighting, never later than the clock.
+
+    When no new mail arrives (an expired sign-in, a sync outage), the clock keeps moving
+    but the jobs don't: measuring from the newest sighting keeps the last days' jobs in
+    Apply today and stops every job from expiring, instead of silently emptying the lists.
+    With mail flowing normally the two are within minutes of each other.
+    """
+    newest = max((last_seen(j) for j in jobs), default=None)
+    return min(now, newest) if newest is not None else now
+
+
 def last_seen(job: StoredJob) -> dt.datetime:
     return max(job.received_at, job.last_seen_at) if job.last_seen_at else job.received_at
 

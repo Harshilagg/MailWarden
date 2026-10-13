@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Apply today · mailwarden{% endblock %}
 {% block content %}
+{% include "_sync_banner.html" %}
 <h1>Apply today</h1>
 {% if policy_error %}<p class="empty"><strong>matching.yaml has a problem, so nothing is filtered right now:</strong> {{ policy_error }}<br>Run <code>mailwarden matching check</code>.</p>{% endif %}
 <p class="lead">Your daily shortlist: the top {{ n }} jobs{% if days %} first seen in the last {{ days }} day{{ "s" if days != 1 }}{% endif %}, by rank
@@ -22,7 +23,7 @@ Run <code>mailwarden jobs audit</code> to check 15 jobs this list left out, and 
   </div>
   <p class="meta">{{ j.company or "Company not listed" }}{% if j.location %} · {{ j.location }}{% endif %}{% if j.details %} · {{ j.details }}{% endif %}</p>
   <p class="meta">{{ p.rank.parts|join(" · ") }}</p>
-  {% if p.experience %}<p class="meta">{% if p.experience.status == "stretch" %}<span class="pill">Stretch</span>{% else %}<span class="pill">Fresher OK</span>{% endif %} {{ p.experience.evidence }}</p>{% endif %}
+  {% if p.experience %}<p class="meta">{% if p.experience.status == "stretch" %}<span class="pill">Stretch</span>{% elif p.experience.status == "unknown" %}<span class="pill">Experience not stated</span>{% else %}<span class="pill">Fresher OK</span>{% endif %} {{ p.experience.evidence }}</p>{% endif %}
   {% if j.why %}<p class="summary">{{ j.why }}</p>{% endif %}
   {% if j.best_project %}<p class="meta">Lead with: <strong>{{ j.best_project }}</strong></p>{% endif %}
   {% if j.missing_skills %}<p class="meta">Missing: {{ j.missing_skills|join(", ") }}</p>{% endif %}
@@ -31,6 +32,10 @@ Run <code>mailwarden jobs audit</code> to check 15 jobs this list left out, and 
     <span class="meta">via {{ j.source_name or j.sender }} · {{ j.received_at|ago }}{% if j.also_on %} · also on: {{ j.also_on|join(", ") }}{% endif %}</span>
     <span class="actions">
       {% if p.link %}<a class="button" href="{{ p.link }}" target="_blank" rel="noopener noreferrer">Open</a>{% endif %}
+      <form method="post" action="/jobs/{{ j.id }}/applied" class="inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="view" value="apply">
+        <button>Applied</button>
+      </form>
       <form method="post" action="/jobs/{{ j.id }}/dismiss" class="inline">
         <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="view" value="apply">
         <button class="secondary">Dismiss</button>

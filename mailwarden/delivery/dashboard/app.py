@@ -11,6 +11,7 @@ Security controls:
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import re
 from pathlib import Path
 from collections import Counter
@@ -34,6 +35,7 @@ from mailwarden.storage.base import AccountRegistry, Repository
 
 _SLUG = re.compile(SLUG_PATTERN)
 _MSG_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+log = logging.getLogger(__name__)
 _PUBLIC_PATHS = {"/login", "/static/style.css", "/static/logo-64.png", "/static/logo-180.png", "/favicon.ico"}
 STAGE_COLUMNS = (Stage.APPLIED, Stage.ASSESSMENT, Stage.INTERVIEW, Stage.OFFER, Stage.REJECTION, Stage.OTHER)
 
@@ -116,7 +118,23 @@ def create_app(deps: DashboardDeps) -> FastAPI:
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
+    def sync_problems() -> list:
+        from mailwarden.core import sync_health
+
+        try:
+            names = [a.name for a in deps.accounts.list(deps.user_id)]
+            repo = deps.repo_factory()
+            try:
+                return sync_health.problems(repo, deps.user_id, deps.now(), accounts=names)
+            finally:
+                repo.close()
+        except Exception:
+            log.exception("could not read sync health")
+            return []
+
     def render(name: str, request: Request, status_code: int = 200, **ctx) -> HTMLResponse:
+        if name != "login.html":
+            ctx.setdefault("sync_problems", sync_problems())
         html = env.get_template(name).render(path=request.url.path, **ctx)
         return HTMLResponse(html, status_code=status_code)
 
@@ -227,8 +245,14 @@ def create_app(deps: DashboardDeps) -> FastAPI:
     @app.get("/digest")
     def digest(request: Request) -> Response:
         repo = deps.repo_factory()
+        quiet_since = None  # the latest digest(s) had no mail: show the last one that did
         try:
             stored = repo.latest_digest(deps.user_id)
+            latest = Digest.from_json(stored[2]) if stored is not None else None
+            if latest is not None and not (latest.total or latest.urgent):
+                fuller = repo.latest_nonempty_digest(deps.user_id)
+                if fuller is not None:
+                    quiet_since, stored = fuller[0], fuller
             if stored is not None:
                 d, live = Digest.from_json(stored[2]), False
             else:
@@ -244,7 +268,7 @@ def create_app(deps: DashboardDeps) -> FastAPI:
             rows = [(e, link(addrs, e.account, e.message_id), dt.datetime.fromisoformat(e.received_at)) for e in entries]
             collapsed = key in (Category.NEWSLETTER, Category.JOB_ALERT)
             sections.append((CATEGORY_TITLES[Category(key)], rows, collapsed))
-        return render("digest.html", request, d=d, live=live, sections=sections,
+        return render("digest.html", request, d=d, live=live, sections=sections, quiet_since=quiet_since,
                       generated=dt.datetime.fromisoformat(d.generated_at),
                       sensitive_total=sum(d.sensitive_by_sender.values()))
 
@@ -261,7 +285,7 @@ def create_app(deps: DashboardDeps) -> FastAPI:
 
     def _job_rows(profile: dict | None, policy):
         from mailwarden.core.expiry import expired_reason
-        from mailwarden.core.jd import plan
+        from mailwarden.core.jd import DEFAULT_DENY, plan
         from mailwarden.core.prefilter import prefilter_job
         from mailwarden.profile import match_role
 
@@ -274,6 +298,9 @@ def create_app(deps: DashboardDeps) -> FastAPI:
         finally:
             repo.close()
         now = deps.now()
+        from mailwarden.core.expiry import reference_time
+
+        ref = reference_time(stored, now)  # an outage must not expire every job
         targets = list((profile or {}).get("target_roles") or [])
         actions = deps.job_actions
         button = bool(actions and getattr(actions, "button_fetch_enabled", False))
@@ -284,8 +311,8 @@ def create_app(deps: DashboardDeps) -> FastAPI:
                 highlight = match_role(j.title, targets) is not None
             else:
                 highlight = matches_filters(j.title, j.location, deps.job_keywords, deps.job_locations)
-            p = plan(j.link)
-            expired = expired_reason(j, now=now, after_days=deps.expire_after_days)
+            p = plan(j.link, denied=getattr(actions, "deny", DEFAULT_DENY))
+            expired = expired_reason(j, now=ref, after_days=deps.expire_after_days)
             can_fetch = (bool(actions) and j.jd_status not in ("ok", "closed") and not expired
                          and (p.automatic or (button and p.kind != "none")))
             rows.append({"job": j, "expired": expired, "match": highlight and not (verdict and verdict.excluded),
@@ -389,6 +416,53 @@ def create_app(deps: DashboardDeps) -> FastAPI:
                       watchlist=deps.watchlist, days=deps.apply_today_days,
                       family_pct=round(deps.max_family_share * 100), audit_due=due, checks=checks,
                       checks_total=len(queue), max_stretch=max_stretch, policy_error=policy_error)
+
+    @app.post("/jobs/{job_id}/applied")
+    async def job_applied(request: Request, job_id: int) -> Response:
+        """You applied: leaves Apply today at once, and goes into Applications (stage: applied)."""
+        from mailwarden.core.applications import record_job_event
+
+        try:
+            form = await check_post(request)
+        except PermissionError:
+            return forbidden()
+        undo = form.get("value") == "undo"
+        repo = deps.repo_factory()
+        try:
+            job = repo.get_job(deps.user_id, job_id)
+            if job is not None:
+                now = deps.now()
+                repo.mark_applied(deps.user_id, job_id, None if undo else now)
+                if undo:
+                    repo.remove_application_event(deps.user_id, f"job-{job_id}")
+                elif job.applied_at is None:
+                    record_job_event(repo, deps.user_id, company=job.company, role=job.title, stage=Stage.APPLIED,
+                                     account=job.account, message_id=f"job-{job_id}", received_at=now, domain=None)
+        finally:
+            repo.close()
+        return _back(form, job_id)
+
+    @app.get("/insights")
+    def insights(request: Request) -> Response:
+        """Job-description fetching by site (last 30 days): where pages read fine, and where they don't."""
+        repo = deps.repo_factory()
+        try:
+            rows = repo.fetch_stats(deps.user_id, deps.now() - dt.timedelta(days=30))
+        finally:
+            repo.close()
+        sites: dict[str, dict[str, int]] = {}
+        for host, outcome, count in rows:
+            sites.setdefault(host, {})[outcome] = count
+        table = []
+        for host, outcomes in sites.items():
+            total = sum(outcomes.values())
+            ok = outcomes.get("ok", 0) + outcomes.get("closed", 0)
+            failures = {k: v for k, v in outcomes.items() if k not in ("ok", "closed")}
+            top = max(failures, key=failures.get) if failures else ""
+            table.append({"host": host, "total": total, "ok": ok, "rate": round(100 * ok / total), "top": top,
+                          "failures": failures})
+        table.sort(key=lambda r: (-r["total"], r["host"]))
+        return render("insights.html", request, sites=table)
 
     @app.post("/jobs/{job_id}/experience")
     async def experience_check(request: Request, job_id: int) -> Response:

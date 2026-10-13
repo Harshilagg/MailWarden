@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Insights · mailwarden{% endblock %}
+{% block content %}
+{% include "_sync_banner.html" %}
+<h1>Insights</h1>
+<h2>Job-description fetching by site <span class="count">last 30 days</span></h2>
+<p class="lead">How often a job page could be read, per site. Sites that are often <em>unreadable</em> usually build the page with JavaScript (a headless browser could help there later); <em>blocked</em> means the site refused the request; <em>robots</em> means the site asks not to be fetched.</p>
+{% if not sites %}<p class="empty">No job pages fetched yet. Set <code>[job_alerts] jd_fetch = "auto"</code> or "button" in config.toml.</p>
+{% else %}
+<table class="table">
+  <thead><tr><th>Site</th><th>Tries</th><th>Read</th><th>Success</th><th>Most common problem</th></tr></thead>
+  <tbody>
+  {% for r in sites %}
+    <tr><td>{{ r.host }}</td><td>{{ r.total }}</td><td>{{ r.ok }}</td><td>{{ r.rate }}%</td>
+      <td>{% if r.top %}{{ r.top.replace("_", " ") }} ({{ r.failures[r.top] }}){% endif %}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

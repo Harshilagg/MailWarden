@@ -55,9 +55,21 @@ def test_flow_requests_only_readonly_with_pkce():
     assert q["scope"] == [GMAIL_READONLY]
     assert q["code_challenge_method"] == ["S256"]
     assert "include_granted_scopes" not in q
+    assert "login_hint" not in q  # add-account: you choose the account
     assert q["redirect_uri"][0].startswith("http://127.0.0.1:")
     exchange = parse_qs(transport.requests[0].body)
     assert "code_verifier" in exchange
+
+
+def test_reauth_preselects_the_account():
+    session, _ = _session(
+        {"access_token": "ya29.a", "refresh_token": "1//r", "expires_in": 3600, "scope": GMAIL_READONLY}
+    )
+    browser, seen = _browser()
+    run_loopback_flow(CLIENT, session, open_browser=browser, announce=lambda _: None, timeout_seconds=10,
+                      login_hint="me@gmail.com")
+    q = parse_qs(urlsplit(seen["url"]).query)
+    assert q["login_hint"] == ["me@gmail.com"] and q["scope"] == [GMAIL_READONLY]
 
 
 def test_flow_with_broader_grant_revokes_and_refuses():

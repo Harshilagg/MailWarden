@@ -119,12 +119,36 @@ class JobAlertSettings(_Section):
     # Automatically fetch job descriptions for candidates hosted on Greenhouse, Lever or Ashby,
     # through their public job-board APIs (fixed hosts, no cookies, cached 7 days).
     jd_auto_fetch: bool = True
-    # The "Fetch job description" buttons (you click them). Allowlisted hiring systems only:
-    # Greenhouse, Lever, Ashby, Workday, SmartRecruiters, SuccessFactors/jobs2web. Opt-in.
-    jd_button_fetch: bool = False
+    # Job pages on any public site except jd_fetch_deny, through the isolated job-page session:
+    # "auto" = on each sync for jobs that pass the prefilter (newest first, max_jd_fetches_per_run, paced
+    # per site, robots.txt honoured); "button" = only when you click "Fetch job description"; "off".
+    jd_fetch: Literal["auto", "button", "off"] = "auto"
+    # Never fetched (a "Paste JD" box instead). Host suffixes: "indeed.com" also covers in.indeed.com.
+    jd_fetch_deny: list[str] = ["linkedin.com", "indeed.com", "naukri.com", "glassdoor.com", "glassdoor.co.in"]
+    # Deprecated: jd_button_fetch = true is read as jd_fetch = "button".
+    jd_button_fetch: bool | None = None
+    # Seconds between two requests to the same site (robots.txt included).
+    jd_fetch_interval_seconds: float = Field(default=5.0, ge=1.0, le=120.0)
     max_jd_fetches_per_run: int = Field(default=30, ge=0, le=500)
+
+    @model_validator(mode="after")
+    def _legacy_button(self) -> JobAlertSettings:
+        if self.jd_button_fetch and self.jd_fetch == "off":
+            object.__setattr__(self, "jd_fetch", "button")
+        return self
+
+    @field_validator("jd_fetch_deny")
+    @classmethod
+    def _deny(cls, v: list[str]) -> list[str]:
+        out = [x.strip().lower().lstrip(".") for x in v if x and x.strip()]
+        if any("/" in x or " " in x for x in out):
+            raise ValueError("jd_fetch_deny entries are host names like 'linkedin.com'")
+        return out
     # Fit scores computed per run (each is one LLM call; shares the LLM rate limit).
     max_scores_per_run: int = Field(default=40, ge=0, le=1000)
+    # Fit scores per day (local time), so scoring never uses up the LLM's free daily quota that
+    # classifying your email needs. 0 = no daily cap.
+    max_scores_per_day: int = Field(default=80, ge=0, le=10000)
 
 
 class DigestSettings(_Section):

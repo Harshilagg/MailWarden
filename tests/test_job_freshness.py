@@ -197,7 +197,7 @@ def test_expired_tab_keeps_stale_jobs_visible(env):  # noqa: F811
     env.now = lambda: NOW
     repo = env.repo_factory()
     _save(repo, [JobPost(title="Backend Engineer", company="New", location="Bengaluru", link=None)],
-          message_id="n1", when=NOW - dt.timedelta(days=1))
+          message_id="n1", when=NOW)
     _save(repo, [JobPost(title="Platform Engineer", company="Old", location="Bengaluru", link=None)],
           message_id="o1", when=NOW - dt.timedelta(days=30))
     repo.close()

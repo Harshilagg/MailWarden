@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Job alerts · mailwarden{% endblock %}
 {% block content %}
+{% include "_sync_banner.html" %}
 <h1>Job alerts <span class="count">{{ counts.all }}</span></h1>
 {% if policy_error %}<p class="empty"><strong>matching.yaml has a problem, so nothing is filtered right now:</strong> {{ policy_error }}<br>Run <code>mailwarden matching check</code>.</p>{% endif %}
 <p class="lead">Jobs from your job-alert emails, with duplicates across sites merged.
@@ -11,6 +12,7 @@ A <em>preliminary</em> score comes from the alert alone (at most 7); a <em>full<
 {% else %}Build your profile (<code>mailwarden profile build</code>) to filter and score jobs.{% endif %}</p>
 <p class="filters">
   <a href="/apply">Apply today ({{ apply_n }})</a>
+  <a href="/insights">Insights</a>
   <a href="/jobs?view=candidates&sort={{ sort }}"{% if view == "candidates" %} aria-current="page"{% endif %}>Candidates ({{ counts.candidates }})</a>
   <a href="/jobs?view=check&sort={{ sort }}"{% if view == "check" %} aria-current="page"{% endif %}>Needs a quick check ({{ counts.check }})</a>
   <a href="/jobs?view=all&sort={{ sort }}"{% if view == "all" %} aria-current="page"{% endif %}>All ({{ counts.all }})</a>
@@ -46,7 +48,7 @@ Open the posting, check the experience line, and mark it <strong>Fresher OK</str
 {% for r in rows %}{% set j = r.job %}
   <li class="job{% if r.match %} match{% endif %}" id="job-{{ j.id }}">
     <div class="job-main">
-      <span class="job-title">{% if j.score is not none %}<span class="pill">{{ "%.1f"|format(j.score) }} · {{ j.score_level }}</span> {% endif %}{{ j.title }}{% if r.rank.applied %} <span class="pill">Already applied</span>{% endif %}{% if r.rank.watchlist %} <span class="pill">Watchlist</span>{% endif %}</span>
+      <span class="job-title">{% if j.score is not none %}<span class="pill">{{ "%.1f"|format(j.score) }} · {{ j.score_level }}</span> {% endif %}{{ j.title }}{% if j.applied_at %} <span class="pill">Applied {{ j.applied_at|ago }}</span>{% elif r.rank.applied %} <span class="pill">Already applied</span>{% endif %}{% if r.rank.watchlist %} <span class="pill">Watchlist</span>{% endif %}</span>
       <span class="meta">{{ j.company or "Company not listed" }}{% if j.location %} · {{ j.location }}{% endif %}{% if j.details %} · {{ j.details }}{% endif %}</span>
       {% if j.why %}<span class="summary">{{ j.why }}</span>{% endif %}
       {% if j.best_project %}<span class="meta">Lead with: {{ j.best_project }}</span>{% endif %}
@@ -71,6 +73,10 @@ Open the posting, check the experience line, and mark it <strong>Fresher OK</str
     </div>
     <div class="actions">
       {% if r.link %}<a class="button" href="{{ r.link }}" target="_blank" rel="noopener noreferrer">Open</a>{% endif %}
+      <form method="post" action="/jobs/{{ j.id }}/applied" class="inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="view" value="{{ view }}"><input type="hidden" name="sort" value="{{ sort }}">{% if j.applied_at %}<input type="hidden" name="value" value="undo">{% endif %}
+        <button class="secondary">{% if j.applied_at %}Undo applied{% else %}Applied{% endif %}</button>
+      </form>
       {% if r.needs_check or j.experience_check %}
       {% for value, label in ([("clear", "Undo check")] if j.experience_check else [("fresher", "Fresher OK"), ("senior", "Too senior")]) %}
       <form method="post" action="/jobs/{{ j.id }}/experience" class="inline">

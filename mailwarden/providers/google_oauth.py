@@ -162,6 +162,7 @@ def run_loopback_flow(
     open_browser: Callable[[str], object] = webbrowser.open,
     announce: Callable[[str], None] = print,
     timeout_seconds: int = 300,
+    login_hint: str | None = None,
 ) -> TokenGrant:
     verifier, challenge = _pkce_pair()
     state = secrets.token_urlsafe(32)
@@ -183,6 +184,8 @@ def run_loopback_flow(
         "prompt": "consent",
         # include_granted_scopes deliberately omitted: never merge other grants.
     }
+    if login_hint:  # preselect this Google account (reauth): Google already knows the address
+        params["login_hint"] = login_hint
     url = f"{AUTH_URL}?{urlencode(params)}"
     announce(f"Opening your browser for Google sign-in. If it does not open, visit:\n{url}")
     open_browser(url)
@@ -272,7 +275,7 @@ class GoogleCredentials:
             except ValueError:
                 err = ""
             if err in ("invalid_grant", "unauthorized_client", "invalid_client"):
-                raise ReauthRequired(f"Google rejected the stored grant ({err}); run add-account again")
+                raise ReauthRequired(f"Google rejected the stored sign-in ({err}); run `mailwarden reauth <account>`")
         if resp.status_code != 200:
             raise ProviderError(f"token refresh failed (HTTP {resp.status_code})")
         data = resp.json()

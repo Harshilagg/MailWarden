@@ -81,14 +81,26 @@ class App:
             return f"groq ({s.groq.model}) - CLOUD: receives redacted text of SAFE mail only"
         return f"ollama ({s.ollama.model}) - local: nothing leaves this machine"
 
-    def job_actions(self):
-        from mailwarden import profile as prof
-        from mailwarden.core.jd import BUTTON_FETCH_SUFFIXES
-        from mailwarden.core.job_scoring import JobActions
-        from mailwarden.security.net import PublicWebSession, fetch_json
+    def page_sources(self):
+        """The guarded job-page fetcher (jd_fetch = "auto" | "button"), or None when jd_fetch = "off"."""
+        from mailwarden.core.jd_fetch import PageFetcher
+        from mailwarden.core.job_scoring import PageSources
+        from mailwarden.security.net import PublicWebSession
 
         ja = self.settings.job_alerts
-        button = PublicWebSession(BUTTON_FETCH_SUFFIXES) if ja.jd_button_fetch else None
+        if ja.jd_fetch == "off":
+            return None
+        web = PublicWebSession(tuple(ja.jd_fetch_deny))
+        fetcher = PageFetcher(lambda url: web.fetch_html(url)[::2], web.fetch_robots,
+                              min_interval=ja.jd_fetch_interval_seconds)
+        return PageSources(get_page=fetcher.get_page, get_json=web.fetch_json, deny=tuple(ja.jd_fetch_deny))
+
+    def job_actions(self):
+        from mailwarden import profile as prof
+        from mailwarden.core.job_scoring import JobActions
+        from mailwarden.security.net import fetch_json
+
+        ja = self.settings.job_alerts
         path = self.home / DB_RELATIVE_PATH
         key = self.secrets.get(SecretKeys.db_key(self.user_id)) or ""
         return JobActions(
@@ -98,8 +110,8 @@ class App:
             effective_skills=prof.effective_skills,
             llm_factory=self.llm_backend,
             auto_json=(lambda url: fetch_json(self.session, url)) if ja.jd_auto_fetch else None,
-            button_json=button.fetch_json if button else None,
-            button_page=(lambda url: button.fetch_html(url)[::2]) if button else None,
+            pages=self.page_sources(),
+            deny=tuple(ja.jd_fetch_deny),
         )
 
     def profile(self) -> dict | None:

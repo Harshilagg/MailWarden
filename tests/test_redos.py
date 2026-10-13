@@ -11,7 +11,11 @@ from mailwarden.core.job_alerts import parse_job_anchors, parse_view_job_blocks
 from mailwarden.core.models import StoredJob
 from mailwarden.core.experience import classify
 from mailwarden.core.policy import default_policy
+from mailwarden.core import jd as _jd
+from mailwarden.core.html_text import HtmlParseError as _HtmlErr
+from mailwarden.core.html_text import page_text as _page_text
 from mailwarden.core.prefilter import internship_hint, is_stipend, location_ok, prefilter
+from mailwarden.core.sources import company_from_link, tidy_requisition_title
 from mailwarden.core.ranking import role_family
 from mailwarden.core.recruiting import looks_like_job_alert, recruiting_markers, sender_label
 from mailwarden.core.redact import redact_text, strip_footer
@@ -53,10 +57,26 @@ FUNCTIONS = {
                                             link=t[:2000]),
     "location": lambda t: location_ok(t[:200], ["Bengaluru", "Delhi NCR"], True),
     "terms": lambda t: (_POLICY.any_stack.find_all(t), _POLICY.senior.find(t)),
+    "jd_page": lambda t: (_from_page(t), _page_text_or_refused(t)),
+    "jd_plan": lambda t: (_jd.plan("https://x.example.com/CL0/" + t[:3000]), _jd.unwrap("https://a.b/?url=" + t[:3000]),
+                          _jd.strip_tracking("https://a.b/?" + t[:3000])),
+    "title_tidy": lambda t: tidy_requisition_title(t[:300]),
+    "company_link": lambda t: company_from_link("https://my.greenhouse.io/jobs/" + t[:2000]),
     "role_family": role_family,
 }
 
 _NOW = _dt.datetime(2026, 10, 5, tzinfo=_dt.UTC)
+
+
+def _from_page(t):
+    return _jd.from_page(t)
+
+
+def _page_text_or_refused(t):
+    try:
+        return _page_text(t)
+    except _HtmlErr:
+        return ""
 _POLICY = default_policy()
 
 

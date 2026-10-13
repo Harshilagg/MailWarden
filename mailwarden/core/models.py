@@ -217,6 +217,8 @@ class StoredJob(BaseModel):
     last_seen_at: dt.datetime | None = None
     #: Your quick check of the experience level on the dashboard: "fresher" | "senior" | None.
     experience_check: str | None = None
+    #: When you clicked "Applied" (None: not marked).
+    applied_at: dt.datetime | None = None
     source_type: str | None = None
     source_name: str | None = None
     #: Other sources the same job was seen on (names), in order.

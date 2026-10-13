@@ -17,7 +17,7 @@ from email.utils import parseaddr
 from typing import Any
 
 from mailwarden.core.models import Account, FetchedMessage, ProviderKind
-from mailwarden.providers.base import MailProvider, ProviderError, SyncResult
+from mailwarden.providers.base import MailProvider, MessageGone, ProviderError, SyncResult
 from mailwarden.providers.google_oauth import GoogleCredentials
 from mailwarden.providers.html_text import HtmlParseError, html_links, html_to_text, looks_like_html
 from mailwarden.security.net import AllowlistedSession
@@ -249,6 +249,9 @@ class GmailProvider(MailProvider):
 
     def get_message(self, account: Account, message_id: str) -> FetchedMessage:
         if not _ID.match(message_id):
-            raise ProviderError("invalid message id")
-        data = self._get(account, f"/messages/{message_id}", {"format": "full"})
+            raise MessageGone("invalid message id")
+        try:
+            data = self._get(account, f"/messages/{message_id}", {"format": "full"})
+        except _NotFound:
+            raise MessageGone("message no longer exists") from None
         return parse_message(account.user_id, account.name, data)

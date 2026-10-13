@@ -299,7 +299,8 @@ def test_single_instance_handoff():
     got = []
     serve_app_socket(sock, got.append)
     assert stat.S_IMODE(os.stat(sock).st_mode) == 0o600
-    assert send_to_running_app(sock, "/i/personal/abc") is True
+    # Generous timeout: under a busy full test run the server thread can take over a second to be scheduled.
+    assert send_to_running_app(sock, "/i/personal/abc", timeout=5.0) is True
     for _ in range(50):
         if got:
             break

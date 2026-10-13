@@ -13,7 +13,7 @@ mailwarden is designed with two goals:
 | A cloud LLM seeing sensitive mail | A local, fail-closed sensitivity gate. Sensitive mail never reaches any LLM, and everything else is redacted first |
 | Malicious email content (prompt injection, crafted HTML, ReDoS) | Email text is treated as data: nonce-delimited prompts, strict output schemas, no tools, linear-time parsing |
 | Disk theft or other local users | Secrets only in the OS keyring, an SQLCipher-encrypted database with no bodies or subjects, owner-only file modes |
-| Unexpected network traffic | One host allowlist enforced in code, with TLS always verified and proxies ignored. No telemetry |
+| Unexpected network traffic | One host allowlist enforced in code, with TLS always verified and proxies ignored. Job-page fetching (on by default, `jd_fetch = "off"` to disable) is isolated, with SSRF guards on every hop. No telemetry |
 | Web pages and other local processes reaching the dashboard | Bound to 127.0.0.1, with a Host check, cookie auth, CSRF tokens and a strict CSP with no scripts |
 | Too much access at Google | Exactly `gmail.readonly`. Broader grants are revoked and refused |
 
@@ -46,9 +46,10 @@ if this table and the code disagree.
 | `api.groq.com` | `[groq] enabled = true` | Redacted text of SAFE mail for classification and job-list extraction, and job text plus a profile summary for fit scores (see below). Never SENSITIVE mail. Also `GET /models` to validate the key |
 <!-- allowlist:end -->
 
-The **job-page session** is separate, and only the opt-in fetch buttons use it (see
-[Job descriptions](#job-descriptions)). It has its own short list of job sites and
-stricter rules.
+The **job-page session** is separate, and used only for fetching job pages
+(`jd_fetch`, on by default; see [Job descriptions](#job-descriptions)). It may contact any
+public site except a do-not-fetch list, with every hop checked against internal
+addresses.
 
 No telemetry, analytics or update checks exist.
 
@@ -252,34 +253,62 @@ the summary described under [Fit scores](#fit-scores) is.
 Job descriptions (JDs) make fit scores meaningful. They come from three places, and
 none of them uses anything from your mailbox beyond the job's own link.
 
-1. **Automatic (`[job_alerts] jd_auto_fetch = true`, the default).** This covers only
-   candidate jobs (those passing the prefilter) whose link is on **Greenhouse, Lever
-   or Ashby**. The job's public posting is read from those companies' job-board APIs,
-   which are the fixed hosts in the table above. There are no cookies and no tracking
-   links. At most `max_jd_fetches_per_run` are fetched per run, paced, and results
-   are cached for 7 days.
-2. **Buttons (`[job_alerts] jd_button_fetch = true`, off by default).** "Fetch job
-   description" and "Fetch JDs for top 10" on the Job alerts page run only when you
-   click them. They use the separate job-page session, which may contact only these
-   sites and their subdomains:
-   <!-- jd-fetch-sites:start -->
-   `greenhouse.io`, `lever.co`, `ashbyhq.com`, `myworkdayjobs.com`, `myworkdaysite.com`, `smartrecruiters.com`, `successfactors.com`, `successfactors.eu`, `sapsf.com`, `sapsf.eu`, `jobs2web.com`
-   <!-- jd-fetch-sites:end -->
-   The rules for this session are:
-   - Every hop, redirects included, must be on that list.
-   - Requests use HTTPS on the default port only, and never go to IP addresses.
-   - Hosts must resolve to public addresses, and the address actually connected to is
-     checked too.
-   - Requests are GET only, with no cookies or credentials.
-   - Tracking parameters (`utm_*`, `trk`, `gh_src` ...) are removed.
-   - Responses are capped at 2 MB.
-3. **Paste.** For LinkedIn, Naukri, Indeed, Internshala, click-tracker links and any
-   other site, the card explains why the JD can't be fetched and offers a "Paste JD"
-   box. Pasted text (at most 120 KB) is stored and scored like a fetched JD.
+1. **ATS APIs (`[job_alerts] jd_auto_fetch = true`, the default).** Candidate jobs
+   (those passing the prefilter) whose link is on **Greenhouse, Lever or Ashby** are
+   read from those companies' public job-board APIs: the fixed hosts in the table
+   above, through the main allowlisted session.
+2. **Job pages (`[job_alerts] jd_fetch`, `"auto"` by default).** With `"button"`, a
+   job's own page is fetched only when you click "Fetch job description" or "Fetch JDs
+   for top 10". With `"auto"`, each sync also fetches pages for jobs that pass the
+   prefilter, newest first, at most `max_jd_fetches_per_run` per run. Any public site
+   may be fetched **except** the do-not-fetch list (`jd_fetch_deny`), whose jobs get a
+   "Paste JD" box instead. By default that list is:
+   <!-- jd-deny-sites:start -->
+   `linkedin.com`, `indeed.com`, `naukri.com`, `glassdoor.com`, `glassdoor.co.in`
+   <!-- jd-deny-sites:end -->
+   Pages go through a separate, isolated job-page session with these guards:
+   - **Addresses.** http:// and https:// only, on the default port, never to an IP
+     address, and never with credentials in the URL. Every hop, redirects included,
+     is checked again: the host must not be on the do-not-fetch list, and DNS must
+     resolve it only to public addresses. Loopback, private (RFC 1918), link-local,
+     multicast, reserved and carrier-grade-NAT addresses are refused, as are their
+     IPv6 equivalents (`::1`, `fc00::/7`, `fe80::/10`, `ff00::/8`, IPv4-mapped
+     addresses). The address actually connected to is checked as well. At most 5
+     redirects are followed.
+   - **Requests.** GET only. No cookies are stored or sent, and no credentials.
+     There is no JavaScript (pages are parsed as text). The session sends
+     `Accept: text/html` and a plain user agent, `mailwarden/0.2 (personal
+     job-description reader)`. Each request has a 10-second timeout, and responses
+     are capped at 2 MB. Workday and SmartRecruiters jobs use those sites' public JSON
+     job endpoints instead, with the same guards.
+   - **Politeness.** Each site's `robots.txt` is read first (user agent `mailwarden`,
+     same guards) and honoured: a missing file allows everything, and an unreachable
+     one or a server error allows nothing. Requests to the same site are at least
+     `jd_fetch_interval_seconds` (5) apart.
+   - **Links.** Tracking parameters are removed (`utm_*`, `gclid`, `fbclid`, `ref`,
+     `refid`, `trk`, `eid`, `source`, `from`, anything containing `token`, and more).
+     Click-tracking links that carry the real address inside them (e.g.
+     `…/CL0/https%3A%2F%2F…`, `?url=https%3A…`) are unwrapped locally, and the tracker
+     itself is never contacted. Opaque click-trackers (e.g. `links.wellfound.com`,
+     `cts.indeed.com`) are never followed, because opening one would tell the sender
+     you clicked. Unsubscribe, preference and feedback links are never followed, even
+     when wrapped.
+   - **Reading the page.** The page's JobPosting structured data is used when present.
+     Otherwise the text is taken from `<main>`/`<article>` or the whole page, minus
+     scripts, styles, hidden elements, navigation, header, footer, forms and buttons.
+     A page with less than about 300 characters of real sentences is marked "Couldn't
+     read this page, paste JD" and is not used for scoring.
 
-Unsubscribe, preference and feedback links are never followed. JD text is untrusted:
-it is cleaned (links removed, hidden page text dropped), stored in the encrypted
-database, and wrapped as data in the scoring prompt.
+   What a site learns: your IP address, and that something fetched that job page
+   without cookies. It's the same as opening the page in a private browser window, but
+   without running its scripts. Per-site success and failure counts are kept for 90
+   days (Insights page) and never leave the machine.
+3. **Paste.** For denied sites, opaque trackers, unreadable pages or any other case,
+   the card says why and offers a "Paste JD" box. Pasted text (at most 120 KB) is
+   stored and scored like a fetched JD.
+
+JD text is untrusted: it is cleaned (links removed, hidden page text dropped), stored
+in the encrypted database, and wrapped as data in the scoring prompt.
 
 ### Fit scores
 
@@ -301,6 +330,10 @@ It never contains contact details. Scores only order jobs; nothing is hidden.
   grant at sign-in is revoked immediately. `include_granted_scopes` is never sent.
 - The OAuth flow uses PKCE and a random `state`, with the redirect bound to
   `127.0.0.1` on a random port.
+- `mailwarden reauth <name>` runs the same flow for an existing account. It only keeps
+  the new token if Google reports the same Gmail address as before; otherwise the new
+  token is revoked and the old one is restored. After a successful sign-in the old
+  token is revoked.
 
 ## What is stored locally
 
@@ -313,7 +346,9 @@ All paths are inside the mailwarden home (mode 700) unless noted otherwise.
 | Settings and sender rules (non-secret) | `config.toml` and `sender_rules.yaml` (mode 600), with `.bak` copies after `init --reset-rules` |
 | Message metadata and classifications | SQLCipher-encrypted database `data/mailwarden.db` (mode 600). No bodies and no subjects. SENSITIVE rows keep only the sender display name, received time, account and message id |
 | Applications (company, role, stage, history, company domains) | The encrypted database |
-| Jobs: postings, links, sources and "also on" sightings, JDs, fit scores, dismissals, calibration labels, recall-audit answers | The encrypted database |
+| Sync status per account (last good sync, when failures began, the error text) | The encrypted database |
+| Jobs: postings, links, sources and "also on" sightings, JDs, fit scores, dismissals, "applied" marks, calibration labels, recall-audit answers | The encrypted database |
+| Job-page fetch outcomes per site (host, ok/unreadable/blocked …, time), kept 90 days | The encrypted database |
 | Database backups made before migrations | `data/mailwarden.db.<tag>.bak` (mode 600, still encrypted) |
 | Your CV and project notes | `profile/` (you copy them there and `chmod 600` them) |
 | Profile summary | `profile.yaml` and `profile.yaml.bak` (plaintext, with no contact details) |

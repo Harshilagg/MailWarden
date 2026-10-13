@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Settings · mailwarden{% endblock %}
 {% block content %}
+{% include "_sync_banner.html" %}
 <h1>Settings</h1>
 <p class="lead">Read-only. Edit <code>config.toml</code> and <code>sender_rules.yaml</code> in the mailwarden home folder, or use <code>mailwarden promote</code>.</p>
 <section><h2>Classifier</h2><p>{{ backend }}</p></section>

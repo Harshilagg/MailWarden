@@ -409,7 +409,7 @@ def test_jd_buttons_require_csrf_and_accept_long_pastes(env):
     kinds = [c[0] for c in env.job_actions.calls]
     assert kinds == ["paste", "fetch"]
     html = c.get("/jobs?view=all").text
-    assert "Paste JD" in html and "Fetch JDs for top 10" in html and "LinkedIn pages can&#39;t be fetched" in html
+    assert "Paste JD" in html and "Fetch JDs for top 10" in html and "LinkedIn is on the do-not-fetch list" in html
 
 
 def test_scores_show_level_and_details(env):

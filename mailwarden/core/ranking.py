@@ -21,7 +21,7 @@ import re
 from dataclasses import dataclass, field
 
 from mailwarden.core.applications import company_key, role_key
-from mailwarden.core.expiry import expired_reason
+from mailwarden.core.expiry import expired_reason, reference_time
 from mailwarden.core.models import Application, StoredJob
 from mailwarden.core.experience import STRETCH
 from mailwarden.core.policy import MatchingPolicy
@@ -82,7 +82,7 @@ def on_watchlist(company: str | None, watchlist: list[str]) -> bool:
 
 def rank_job(job: StoredJob, *, now: dt.datetime, watchlist: list[str], applied: AppliedIndex,
              policy: MatchingPolicy | None = None) -> RankInfo:
-    is_applied = applied.contains(job.company, job.title)
+    is_applied = job.applied_at is not None or applied.contains(job.company, job.title)
     watched = on_watchlist(job.company, watchlist)
     if job.score is None:
         return RankInfo(None, (), is_applied, watched)
@@ -195,8 +195,9 @@ def is_stretch(job: StoredJob, policy: MatchingPolicy | None) -> bool:
 
 
 def _current(jobs: list[StoredJob], *, now: dt.datetime, expire_after_days: int, new_within_days: int):
+    now = reference_time(jobs, now)  # an outage must not empty the lists
     for job in jobs:
-        if job.dismissed:
+        if job.dismissed or job.applied_at is not None:  # done with: make room for new jobs
             continue
         if new_within_days > 0 and now - job.received_at > dt.timedelta(days=new_within_days):
             continue
@@ -228,14 +229,15 @@ def new_strong_jobs(jobs: list[StoredJob], policy: MatchingPolicy | None, *, sin
                     expire_after_days: int = 0) -> int:
     """Jobs first seen since ``since`` that scored ``threshold``+ (current candidates you haven't applied to)."""
     count = 0
+    ref = reference_time(jobs, now or dt.datetime.now(dt.UTC))
     for job in jobs:
         if job.dismissed or job.score is None or job.score < threshold or job.received_at < since:
             continue
-        if expired_reason(job, now=now or dt.datetime.now(dt.UTC), after_days=expire_after_days):
+        if expired_reason(job, now=ref, after_days=expire_after_days):
             continue
         if not apply_ready(job, policy):
             continue
-        if applied.contains(job.company, job.title):
+        if job.applied_at is not None or applied.contains(job.company, job.title):
             continue
         count += 1
     return count

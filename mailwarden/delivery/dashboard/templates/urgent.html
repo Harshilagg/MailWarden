@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Urgent · mailwarden{% endblock %}
 {% block content %}
+{% include "_sync_banner.html" %}
 <h1>Urgent</h1>
 <p class="lead">Job mail that needs you, soonest deadline first.</p>
 {% if not cards %}

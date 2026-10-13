@@ -21,9 +21,10 @@ def test_security_md_matches_maximal_allowlist():
 
 
 
-def test_security_md_lists_exactly_the_jd_fetch_sites():
-    from mailwarden.core.jd import BUTTON_FETCH_SUFFIXES
+def test_security_md_lists_exactly_the_default_do_not_fetch_sites():
+    from mailwarden.config import JobAlertSettings
+    from mailwarden.core.jd import DEFAULT_DENY
 
     text = DOC.read_text()
-    block = text.split("<!-- jd-fetch-sites:start -->")[1].split("<!-- jd-fetch-sites:end -->")[0]
-    assert set(re.findall(r"`([^`]+)`", block)) == set(BUTTON_FETCH_SUFFIXES)
+    block = text.split("<!-- jd-deny-sites:start -->")[1].split("<!-- jd-deny-sites:end -->")[0]
+    assert set(re.findall(r"`([^`]+)`", block)) == set(DEFAULT_DENY) == set(JobAlertSettings().jd_fetch_deny)

@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Sensitive · mailwarden{% endblock %}
 {% block content %}
+{% include "_sync_banner.html" %}
 <h1>Sensitive <span class="count">{{ total }}</span></h1>
 <p class="lead">These were never sent to any AI and their contents are not stored. Only the sender name and time are kept.</p>
 {% if not counts %}<p class="empty">No sensitive email so far.</p>{% endif %}

@@ -96,10 +96,12 @@ is expected for a personal client, so choose **Continue**. mailwarden requests o
 `gmail.readonly`. A token with any broader scope is revoked and refused.
 
 **Seven-day sign-ins.** While the consent screen is in *Testing*, Google expires
-refresh tokens after 7 days. To avoid re-running `add-account` every week, set the
-publishing status to *In production* without submitting for verification. That is
-allowed for personal use (fewer than 100 users). You will still see the "unverified
-app" warning when you sign in.
+refresh tokens after 7 days, and mailwarden then can't read the account. Every
+dashboard page shows a banner and you get one notification a day; run
+`mailwarden reauth <name>` to sign in again (all data is kept). To stop it happening
+every week, set the publishing status to *In production* without submitting for
+verification. That is allowed for personal use (fewer than 100 users). You will still
+see the "unverified app" warning when you sign in.
 
 ### 3. Set up the classifier
 
@@ -330,14 +332,22 @@ hidden.
 
 ### Job descriptions
 
-- **Automatic:** fetched for candidates hosted on Greenhouse, Lever or Ashby, through
-  their public job-board APIs, and cached for 7 days.
-- **Buttons (opt-in):** set `[job_alerts] jd_button_fetch = true` to get **Fetch job
-  description** and **Fetch JDs for top 10**. These work only for Greenhouse, Lever,
-  Ashby, Workday, SmartRecruiters and SuccessFactors/jobs2web.
-- **Paste:** for LinkedIn, Naukri, Indeed, Internshala, click-tracking links and other
-  sites, the card says why the description can't be fetched. Open the job, copy the
-  description, and use **Paste JD → Save and score**.
+- **ATS APIs (on by default):** fetched for candidates hosted on Greenhouse, Lever or
+  Ashby, through their public job-board APIs, and cached for 7 days.
+- **Job pages (on by default):** with `[job_alerts] jd_fetch = "auto"`, each sync
+  fetches pages for jobs that pass your filters, newest first, up to
+  `max_jd_fetches_per_run`. Set `"button"` to fetch only when you click **Fetch job
+  description** or **Fetch JDs for top 10**, or `"off"` to never fetch job pages. Any site can be fetched except `jd_fetch_deny` (LinkedIn,
+  Indeed, Naukri and Glassdoor by default). Each site's robots.txt is honoured, requests
+  to the same site are spaced out, and click-tracking links are unwrapped without
+  visiting the tracker. A page with too little readable text says "Couldn't read this
+  page, paste JD". SECURITY.md lists every network guard.
+- **Paste:** for denied sites, opaque click-trackers and unreadable pages, the card says
+  why. Open the job, copy the description, and use **Paste JD → Save and score**.
+
+The **Insights** page (linked from Job alerts) shows, per site, how often job pages
+could be read over the last 30 days. Sites that are often "unreadable" usually build
+their pages with JavaScript.
 
 ### Apply today and ranking
 
@@ -362,6 +372,9 @@ shortlist:
   `max_stretch_in_apply_today` stretch jobs).
 - It skips jobs you dismissed, jobs filtered out, expired jobs, and jobs whose company
   and role are already in your Applications.
+- **Applied** on a card removes the job from Apply today at once, so a new job takes
+  its place, and adds it to Applications (stage: applied). **Undo applied** on the Job
+  alerts page reverses both.
 
 You get one notification a day: "N new jobs scored 7+".
 
@@ -500,8 +513,11 @@ the keyring. These are the settings you're most likely to change:
 | `[job_alerts] max_family_share` | 0.25 | Largest share of Apply today from one role family (0 = no cap) |
 | `[job_alerts] expire_after_days` | 14 | Days without an alert before a job expires (0 = only closed postings expire) |
 | `[job_alerts] jd_auto_fetch` | true | Automatic fetches from Greenhouse, Lever and Ashby APIs |
-| `[job_alerts] jd_button_fetch` | false | Fetch buttons on the Job alerts page |
+| `[job_alerts] jd_fetch` | "auto" | Job pages on other sites: "auto", "button" or "off" |
+| `[job_alerts] jd_fetch_deny` | LinkedIn, Indeed, Naukri, Glassdoor | Sites never fetched (paste instead) |
+| `[job_alerts] jd_fetch_interval_seconds` | 5 | Gap between requests to the same site |
 | `[job_alerts] max_scores_per_run` | 40 | Jobs scored per sync |
+| `[job_alerts] max_scores_per_day` | 80 | Jobs scored per day, so the free LLM quota stays available for your email |
 | `[job_alerts] max_jd_fetches_per_run` | 30 | Job descriptions fetched per sync |
 | `[job_alerts] daily_notification` | true | "N new jobs scored 7+", once a day |
 
@@ -512,6 +528,7 @@ the keyring. These are the settings you're most likely to change:
 | `mailwarden init [--reset-rules]` | Create the home folder and default config. `--reset-rules` restores the seeded `sender_rules.yaml` and keeps the old file as `.bak` |
 | `mailwarden add-account --provider gmail --name <n> [--client-secrets FILE]` | Google sign-in; the token is stored in the keyring |
 | `mailwarden accounts` | List accounts (addresses masked) |
+| `mailwarden reauth <n>` | Sign an existing account in again after its sign-in expired, keeping all its data (must be the same Gmail address) |
 | `mailwarden forget-account <n>` | Revoke the token at Google, delete it, and delete the account's stored data |
 | `mailwarden set-groq-key` | Store the Groq API key in the keyring (hidden input) |
 | `mailwarden doctor [--sync] [--llm]` | Check the keyring, permissions, allowlist, scopes and notifications. `--sync` counts recent messages; `--llm` tests the classifier with a fake email |
@@ -547,9 +564,13 @@ Put `--quiet` before any command for warnings-only output (scheduled jobs use it
   answered.
 - **Clicking a notification opens Script Editor.** The app isn't installed. Run
   `mailwarden launcher`. `mailwarden doctor` shows which notifier is in use.
-- **"Google rejected the stored grant".** The refresh token expired (the consent
-  screen is in *Testing*) or was revoked. Run `add-account` again, and see
-  "Seven-day sign-ins" above.
+- **"No new mail from <account>: Google's sign-in expired"** (or "Google rejected the
+  stored sign-in" in the logs). The refresh token expired (the consent screen is in
+  *Testing*) or was revoked. Run `mailwarden reauth <account>`; it keeps all the
+  account's data. See "Seven-day sign-ins" above.
+- **The digest or Apply today looks empty.** Check for the banner above: while mail
+  isn't syncing, the digest page shows the last digest that had mail, and Apply today
+  keeps the jobs from the last alerts that arrived.
 - **Scoring is slow or stops at a rate limit.** Groq's free tier allows about three
   scorings a minute. Unfinished jobs are picked up on the next sync.
 

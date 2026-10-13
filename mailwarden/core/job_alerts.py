@@ -86,18 +86,24 @@ def _clean_line(line: str) -> str:
 
 def _post(title: str, company: str | None, location: str | None, link: str | None,
           details: str | None = None) -> JobPost | None:
-    from mailwarden.core.sources import display_company, split_title_location
+    from mailwarden.core.sources import company_from_link, display_company, split_title_location, tidy_requisition_title
 
-    title, location = split_title_location(_clean_line(title), _clean_line(location) if location else None)
+    raw = _clean_line(title)
+    title, location = split_title_location(raw, _clean_line(location) if location else None)
+    title, coded_city = tidy_requisition_title(title)  # "2026_Java_Eclipse Development_BAN"
     title = title[:200]
     if len(title) < 2 or _URL.search(title):
         return None
+    details = _clean_line(details) if details else ""
+    if title != raw and "_" in raw:  # keep the requisition-style original visible
+        details = " · ".join(filter(None, (details, f"Original title: {raw}")))
+    location = location or coded_city
     return JobPost(
         title=title,
-        company=display_company(_clean_line(company)) if company else None,
+        company=(display_company(_clean_line(company)) if company else None) or company_from_link(link),
         location=(location[:200] or None) if location else None,
         link=safe_link(link),
-        details=(_clean_line(details)[:500] or None) if details else None,
+        details=details[:500] or None,
     )
 
 

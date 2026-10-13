@@ -28,6 +28,8 @@ from mailwarden.providers.base import ProviderError
 from mailwarden.providers.google_oauth import OAuthClient, revoke, run_loopback_flow
 from mailwarden.security.fs import InsecurePermissions
 from mailwarden.security.log_filter import install_logging, scrub
+from keyring.errors import KeyringError
+
 from mailwarden.security.net import EgressBlocked, RequestException
 from mailwarden.security.secrets import InsecureKeyringError, SecretKeys
 
@@ -63,7 +65,8 @@ def cmd_add_account(args: argparse.Namespace) -> int:
     if not re.match(SLUG_PATTERN, args.name):
         raise UsageError("account name must be lowercase letters, digits, '-' or '_' (max 32)")
     if app.accounts.get(app.user_id, args.name):
-        raise UsageError(f"account {args.name!r} already exists")
+        raise UsageError(f"account {args.name!r} already exists; to sign in again (keeping its data) run: "
+                         f"mailwarden reauth {args.name}")
 
     if args.client_secrets:
         client = OAuthClient.from_client_json(Path(args.client_secrets).read_text("utf-8"))
@@ -85,6 +88,50 @@ def cmd_add_account(args: argparse.Namespace) -> int:
         raise
     print(f"Added gmail account {args.name!r} ({_mask(address)}); granted scope: gmail.readonly only.")
     return 0
+
+
+def cmd_reauth(args: argparse.Namespace) -> int:
+    """Sign an existing account in again (expired or revoked grant), keeping all its stored data."""
+    from mailwarden.core import sync_health
+
+    app = build_app()
+    account = app.accounts.get(app.user_id, args.name)
+    if account is None:
+        raise UsageError(f"no account named {args.name!r}; add it with: mailwarden add-account --provider gmail "
+                         f"--name {args.name}")
+    if account.provider != ProviderKind.GMAIL:
+        raise UsageError("only gmail accounts can be signed in again")
+    print(f"Sign in to Google as {_mask(account.address)} in the browser window that opens.")
+    grant = run_loopback_flow(app.google_client(), app.session, login_hint=account.address)
+    token_key = SecretKeys.oauth_refresh(app.user_id, account.name)
+    old = app.secrets.get(token_key)
+    app.secrets.set(token_key, grant.refresh_token)
+    try:
+        address = app.providers[ProviderKind.GMAIL].profile_address(account)  # type: ignore[attr-defined]
+    except Exception:
+        _restore_token(app, token_key, old, grant.refresh_token)
+        raise
+    if address.lower() != account.address.lower():
+        _restore_token(app, token_key, old, grant.refresh_token)
+        raise UsageError(f"you signed in as {_mask(address)}, but {account.name!r} is {_mask(account.address)}; "
+                         "nothing changed. Run it again and pick the right Google account.")
+    if old and old != grant.refresh_token:
+        revoke(app.session, old)  # usually already dead; revoking makes sure
+    repo = app.repository()
+    try:
+        sync_health.record_ok(repo, app.user_id, account.name, dt.datetime.now(dt.UTC))
+    finally:
+        repo.close()
+    print(f"Signed {account.name!r} ({_mask(address)}) in again; scope: gmail.readonly only. All its data is kept.")
+    return 0
+
+
+def _restore_token(app: App, token_key: str, old: str | None, new: str) -> None:
+    if old:
+        app.secrets.set(token_key, old)
+    else:
+        app.secrets.delete(token_key)
+    revoke(app.session, new)
 
 
 def cmd_accounts(args: argparse.Namespace) -> int:
@@ -113,6 +160,13 @@ def cmd_forget_account(args: argparse.Namespace) -> int:
     finally:
         repo.close()
     app.accounts.remove(app.user_id, account.name)
+    repo = app.repository()
+    try:
+        from mailwarden.core import sync_health
+
+        sync_health.forget(repo, app.user_id, account.name)
+    finally:
+        repo.close()
     print(f"Revoked the token for {account.name!r}, deleted it from the keyring, and deleted its stored data.")
     return 0
 
@@ -229,6 +283,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         f"them job mail surfaced), {stats.ignored} ignored; {stats.job} job emails; "
         f"{len(stats.alerts)} would notify; {stats.jobs_new} new jobs from job alerts; "
         f"{stats.pending} pending for next run"
+        + (f"; {stats.gone} deleted in Gmail before they could be read (dropped)" if stats.gone else "")
     )
     if stats.accounts_failed:
         print(f"accounts failed: {', '.join(stats.accounts_failed)}", file=sys.stderr)
@@ -488,7 +543,7 @@ def jobs_maintenance(app: App, profile: dict, *, fetch: bool = True, score: bool
                      fetch_limit: int | None = None, score_limit: int | None = None, verbose: bool = True) -> None:
     """Automatic JD fetches (public ATS APIs) and fit scoring for candidates."""
     from mailwarden import profile as prof
-    from mailwarden.core.job_scoring import fetch_auto_jds, score_jobs
+    from mailwarden.core.job_scoring import count_scores, fetch_auto_jds, score_jobs, scores_left_today
     from mailwarden.security.net import fetch_json
 
     import fcntl
@@ -512,18 +567,30 @@ def jobs_maintenance(app: App, profile: dict, *, fetch: bool = True, score: bool
         return
     repo = app.repository()
     try:
-        if fetch and ja.jd_auto_fetch:
-            st = fetch_auto_jds(repo, app.user_id, policy, get_json=lambda url: fetch_json(app.session, url),
+        pages = app.page_sources() if ja.jd_fetch == "auto" else None
+        if fetch and (ja.jd_auto_fetch or pages is not None):
+            st = fetch_auto_jds(repo, app.user_id, policy,
+                                get_json=(lambda url: fetch_json(app.session, url)) if ja.jd_auto_fetch else None,
                                 limit=fetch_limit if fetch_limit is not None else ja.max_jd_fetches_per_run,
-                                now=dt.datetime.now(dt.UTC), expire_after_days=ja.expire_after_days)
+                                now=dt.datetime.now(dt.UTC), expire_after_days=ja.expire_after_days, pages=pages)
             if verbose:
-                print(f"job descriptions (Greenhouse/Lever/Ashby APIs): {st.fetched} fetched, "
-                      f"{st.unavailable} unavailable" + (f" {st.reasons}" if st.reasons else ""))
-        if score:
+                where = "ATS APIs" + (" and job pages" if pages is not None else "")
+                print(f"job descriptions ({where}): {st.fetched} fetched, {st.unavailable} unavailable"
+                      + (f" {st.reasons}" if st.reasons else ""))
+        now = dt.datetime.now(dt.UTC)
+        left = scores_left_today(repo, app.user_id, ja.max_scores_per_day, now)
+        if score and left == 0 and score_limit is None:
+            if verbose:
+                print(f"fit scores: today's budget ({ja.max_scores_per_day}) is used; more tomorrow "
+                      "(the rest of the LLM's daily quota is kept for your email)")
+        elif score:
             llm = app.llm_backend()
-            st2 = score_jobs(repo, app.user_id, llm, profile, prof.effective_skills(profile),
-                             limit=score_limit if score_limit is not None else ja.max_scores_per_run,
+            limit = score_limit if score_limit is not None else ja.max_scores_per_run
+            if left is not None and score_limit is None:
+                limit = min(limit, left)
+            st2 = score_jobs(repo, app.user_id, llm, profile, prof.effective_skills(profile), limit=limit,
                              expire_after_days=ja.expire_after_days, policy=policy)
+            count_scores(repo, app.user_id, st2.scored + st2.failed, now)
             if verbose:
                 print(f"fit scores: {st2.scored} new ({st2.full} full, {st2.preliminary} preliminary), "
                       f"{st2.unchanged} unchanged, {st2.failed} failed"
@@ -718,6 +785,9 @@ def build_parser() -> argparse.ArgumentParser:
     a.set_defaults(func=cmd_add_account)
 
     sub.add_parser("accounts", help="list accounts").set_defaults(func=cmd_accounts)
+    ra = sub.add_parser("reauth", help="sign an existing account in again (expired sign-in), keeping its data")
+    ra.add_argument("name")
+    ra.set_defaults(func=cmd_reauth)
 
     f = sub.add_parser("forget-account", help="revoke and delete an account's token and data")
     f.add_argument("name")
@@ -810,6 +880,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     except RequestException as e:
         print(f"mailwarden: network error: {type(e).__name__}", file=sys.stderr)
+        return 2
+    except KeyringError:
+        print("mailwarden: the macOS Keychain (or your OS keyring) refused access. It is usually locked or "
+              "waiting for permission: run this in Terminal, enter your login password and choose "
+              "'Always Allow', or unlock the keychain, then try again.", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         return 130

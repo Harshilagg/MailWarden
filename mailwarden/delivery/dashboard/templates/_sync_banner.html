@@ -1,0 +1,13 @@
+{% for p in sync_problems %}
+<p class="empty" role="alert">
+{% if p.reauth %}
+  <strong>No new mail from {{ p.account }} since {{ p.since|ago }}: Google's sign-in expired.</strong>
+  Nothing here updates until you sign in again, which keeps all your data:
+  <code>mailwarden reauth {{ p.account }}</code>.
+  Sign-ins expire every 7 days while your Google consent screen is in <em>Testing</em>; set it to <em>In production</em> to stop this (README: "Seven-day sign-ins").
+{% else %}
+  <strong>Mail sync for {{ p.account }} has been failing since {{ p.since|ago }}</strong>{% if p.last_ok %} (last good sync {{ p.last_ok|ago }}){% endif %}: {{ p.error }}.
+  Run <code>mailwarden doctor --sync</code> for details.
+{% endif %}
+</p>
+{% endfor %}

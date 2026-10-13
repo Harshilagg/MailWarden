@@ -1,7 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Digest · mailwarden{% endblock %}
 {% block content %}
+{% include "_sync_banner.html" %}
 <h1>Digest</h1>
+{% if quiet_since %}<p class="meta">The digests since {{ quiet_since|ago }} had no new mail{% if sync_problems %} because mail isn't syncing (see above){% endif %}. This is the last digest that had mail.</p>{% endif %}
 <p class="lead">{% if live %}Last 24 hours (no digest generated yet){% else %}Generated {{ generated|ago }}{% endif %}.
 {% if d.urgent %} <a href="/">{{ d.urgent }} urgent job item{{ "s" if d.urgent != 1 }}</a> are in the Urgent view.{% endif %}</p>
 {% if not sections and not sensitive_total and not d.ignored %}<p class="empty">No new mail in this period.</p>{% endif %}

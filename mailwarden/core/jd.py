@@ -1,12 +1,13 @@
 """Job descriptions (JDs): where they can come from, and turning pages/API replies into text.
 
-- Automatic: jobs hosted on Greenhouse, Lever or Ashby are fetched through those
-  companies' public job-board JSON APIs (fixed hosts, no cookies, no tracking links).
-- Button (opt-in): the job's own page, only on an allowlist of hiring systems
-  (Greenhouse, Lever, Ashby, Workday, SmartRecruiters, SuccessFactors/jobs2web);
-  Workday and SmartRecruiters also via their public JSON endpoints.
-- Everything else (LinkedIn, Naukri, Indeed, Internshala, click-trackers, other sites)
-  is never fetched: the card says why and offers a "Paste JD" box.
+- ATS APIs (jd_auto_fetch): jobs hosted on Greenhouse, Lever or Ashby are fetched through
+  those companies' public job-board JSON APIs (fixed hosts on the main allowlist).
+- Job pages (jd_fetch = "auto" | "button"): the job's own page on any public site except
+  the do-not-fetch list (LinkedIn, Indeed, Naukri, Glassdoor by default), through the
+  isolated job-page session; Workday and SmartRecruiters via their public JSON endpoints.
+- Click-tracking links are unwrapped when the real address is inside them (never visited);
+  opaque trackers, unsubscribe/preference/feedback links and denied sites are never
+  fetched: the card says why and offers a "Paste JD" box.
 
 JD text is untrusted: it is cleaned, length-capped and later wrapped as data in the
 scoring prompt. No network code lives here; callers pass a fetch function.
@@ -22,17 +23,15 @@ from dataclasses import dataclass
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from mailwarden.core.text import clean
-from mailwarden.core.html_text import html_to_text
+from mailwarden.core.html_text import html_to_text, page_text
 
 MAX_JD_CHARS = 20_000
 MIN_JD_CHARS = 200
+MIN_MEANINGFUL_CHARS = 300  # of real sentences, for a fetched page to count as a JD
+UNREADABLE = "Couldn't read this page, paste JD"
+DEFAULT_DENY = ("linkedin.com", "indeed.com", "naukri.com", "glassdoor.com", "glassdoor.co.in")
 
 # Fixed API hosts used for automatic fetching: security.net.JD_API_HOSTS (main allowlisted session).
-# Sites the "Fetch job description" button may contact (host == suffix or ends with "." + suffix).
-BUTTON_FETCH_SUFFIXES = (
-    "greenhouse.io", "lever.co", "ashbyhq.com", "myworkdayjobs.com", "myworkdaysite.com",
-    "smartrecruiters.com", "successfactors.com", "successfactors.eu", "sapsf.com", "sapsf.eu", "jobs2web.com",
-)
 _BOARDS = {
     "linkedin.com": "LinkedIn", "lnkd.in": "LinkedIn", "naukri.com": "Naukri", "indeed.com": "Indeed",
     "internshala.com": "Internshala", "foundit.in": "foundit", "monsterindia.com": "foundit",
@@ -51,10 +50,15 @@ _NEVER_FOLLOW = re.compile(
     re.IGNORECASE,
 )
 _TRACKING_PARAMS = re.compile(
-    r"^(?:utm_\w+|trk\w*|tracking_?id|ref(?:id)?|refid|lipi|midtoken|midsig|eid|otptoken|mc_[ce]id|gclid|fbclid|"
-    r"gh_src|lever-source|lever-via|source|src|ccuid|campaign\w*|email\w*|_hs\w+|mkt_tok|sid)$",
+    r"^(?:utm_\w+|trk\w*|tracking_?id|ref(?:id|s)?|refid|lipi|midtoken|midsig|eid|otptoken|mc_[ce]id|gclid|fbclid|"
+    r"msclkid|dclid|yclid|gh_src|lever-source|lever-via|source|src|from|ccuid|campaign\w*|email\w*|_hs\w+|mkt_tok|"
+    r"sid|\w*token\w*|\w*_sig|sig)$",
     re.IGNORECASE,
 )
+# Click-trackers that carry the real address inside them: AWS SES "/CL0/<url>/..." and ?url=/?u=/?dest=...
+_WRAPPED_PATH = re.compile(r"/CL\d/(https?(?::|%3A)[^/]+)", re.IGNORECASE)
+_WRAPPED_PARAMS = ("url", "u", "dest", "destination", "redirect", "redirect_url", "redirect_uri", "target", "to",
+                   "link", "q")
 _JD_WORDS = re.compile(r"responsibilit|requirement|qualification|experience|what you|you will|about the role|"
                        r"skills|we are looking", re.IGNORECASE)
 
@@ -91,6 +95,25 @@ def _host_matches(host: str, suffixes) -> bool:
     return any(host == s or host.endswith("." + s) for s in suffixes)
 
 
+def unwrap(link: str) -> str:
+    """The real address inside a click-tracking link, without visiting the tracker."""
+    from urllib.parse import unquote
+
+    for _ in range(3):
+        parts = urlsplit(link)
+        inner = None
+        if m := _WRAPPED_PATH.search(parts.path):
+            inner = unquote(m.group(1))
+        else:
+            query = dict(parse_qsl(parts.query))
+            inner = next((query[k] for k in _WRAPPED_PARAMS if query.get(k, "").startswith(("http://", "https://"))),
+                         None)
+        if not inner or not inner.startswith(("http://", "https://")):
+            return link
+        link = inner
+    return link
+
+
 def strip_tracking(url: str) -> str:
     parts = urlsplit(url)
     query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if not _TRACKING_PARAMS.match(k)]
@@ -111,9 +134,12 @@ class Plan:
         return self.kind in ("greenhouse", "lever", "ashby")
 
 
-def plan(link: str | None) -> Plan:
+def plan(link: str | None, *, denied: tuple[str, ...] = DEFAULT_DENY) -> Plan:
     if not link:
         return Plan("none", why_not="No link to the job: paste the job description")
+    if _NEVER_FOLLOW.search(urlsplit(link).path) or _NEVER_FOLLOW.search(urlsplit(link).query):
+        return Plan("none", why_not="That link is an email-settings/unsubscribe link and is never followed")
+    link = unwrap(link)
     parts = urlsplit(link)
     host = (parts.hostname or "").lower()
     path = [p for p in parts.path.split("/") if p]
@@ -123,12 +149,15 @@ def plan(link: str | None) -> Plan:
     if parts.scheme not in ("https", "http"):
         return Plan("none", why_not="Not a web link: paste the job description")
 
-    # Greenhouse: boards.greenhouse.io/<board>/jobs/<id>, job-boards(.eu).greenhouse.io/..., embed?for=&token=
+    # Greenhouse: boards.greenhouse.io/<board>/jobs/<id>, job-boards(.eu).greenhouse.io/..., embed?for=&token=,
+    # and MyGreenhouse alerts: my.greenhouse.io/jobs/<board>/<id>
     if _host_matches(host, ("greenhouse.io",)):
         if "for" in query and "token" in query and query["token"].isdigit():
             return Plan("greenhouse", f"https://boards-api.greenhouse.io/v1/boards/{query['for']}/jobs/{query['token']}")
         if len(path) >= 3 and path[-2] == "jobs" and path[-1].isdigit():
             return Plan("greenhouse", f"https://boards-api.greenhouse.io/v1/boards/{path[-3]}/jobs/{path[-1]}")
+        if len(path) == 3 and path[0] == "jobs" and path[2].isdigit():
+            return Plan("greenhouse", f"https://boards-api.greenhouse.io/v1/boards/{path[1]}/jobs/{path[2]}")
     # Lever: jobs(.eu).lever.co/<company>/<uuid>[/apply]
     if _host_matches(host, ("lever.co",)) and len(path) >= 2 and re.fullmatch(r"[0-9a-f-]{36}", path[1]):
         api = "api.eu.lever.co" if ".eu." in f".{host}" else "api.lever.co"
@@ -149,15 +178,13 @@ def plan(link: str | None) -> Plan:
         m = re.match(r"(\d{6,})", path[1])
         if m:
             return Plan("smartrecruiters", f"https://api.smartrecruiters.com/v1/companies/{path[0]}/postings/{m.group(1)}")
-    if _host_matches(host, BUTTON_FETCH_SUFFIXES):
-        return Plan("page", strip_tracking(link.replace("http://", "https://", 1)))
-
-    board = next((name for dom, name in _BOARDS.items() if _host_matches(host, (dom,))), None)
-    if board:
-        return Plan("none", why_not=f"{board} pages can't be fetched: open the job in your browser and paste the JD")
+    if _host_matches(host, denied):
+        board = next((name for dom, name in _BOARDS.items() if _host_matches(host, (dom,))), host)
+        return Plan("none", why_not=f"{board} is on the do-not-fetch list: open the job in your browser and paste the JD")
     if _TRACKER_HOST.search(host):
-        return Plan("none", why_not="This is a click-tracking link: open in browser, then paste the JD")
-    return Plan("none", why_not=f"{host} isn't on the fetch list: open in browser, then paste the JD")
+        return Plan("none", why_not="This is a click-tracking link; opening it would tell the sender you clicked. "
+                                    "Open it in your browser, then paste the JD")
+    return Plan("page", strip_tracking(link))
 
 
 # --- turning API replies / pages into JD text --------------------------------------------
@@ -223,11 +250,22 @@ def from_page(page_html: str) -> str:
                 kind = item.get("@type")
                 if kind == "JobPosting" or (isinstance(kind, list) and "JobPosting" in kind):
                     text = _html_text(str(item.get("description") or ""))
-                    if len(text) >= MIN_JD_CHARS:
+                    if meaningful_chars(text) >= MIN_MEANINGFUL_CHARS:
                         return text
                 stack.extend(v for v in item.values() if isinstance(v, (dict, list)))
-    text = _html_text(page_html)
-    return text if len(text) >= MIN_JD_CHARS and _JD_WORDS.search(text) else ""
+    try:
+        main, whole = page_text(page_html[:3_000_000])
+    except Exception:
+        return ""
+    for text in (main, whole):  # the page's <main>/<article> if it has a readable one, else the whole page
+        if meaningful_chars(text) >= MIN_MEANINGFUL_CHARS and _JD_WORDS.search(text):
+            return text
+    return ""
+
+
+def meaningful_chars(text: str) -> int:
+    """Characters in lines that read like sentences or list items (5+ words), not menus or buttons."""
+    return sum(len(line) for line in text.splitlines() if len(line.split()) >= 5)
 
 
 def result_from_text(text: str, source: str, *, empty_reason: str) -> JDResult:
@@ -260,8 +298,7 @@ def acquire(p: Plan, *, get_json: Callable[[str], tuple[int, object]],
             return JDResult.closed(f"{site}: the posting was removed (HTTP {status})")
         if status != 200:
             return JDResult.unavailable(http_reason(status, site))
-        return result_from_text(from_page(page), f"fetch:{site}",
-                                empty_reason=f"{site}: no job description found on the page; paste it instead")
+        return result_from_text(from_page(page), f"fetch:{site}", empty_reason=UNREADABLE)
     status, data = get_json(p.url)
     if status in (404, 410):
         return JDResult.closed(f"{site}: the posting was removed (HTTP {status})")
@@ -277,3 +314,19 @@ def acquire(p: Plan, *, get_json: Callable[[str], tuple[int, object]],
         "smartrecruiters": lambda: from_smartrecruiters(data),
     }[p.kind]()
     return result_from_text(text, f"api:{p.kind}", empty_reason=f"{site}: the posting has no description")
+
+
+def fetch_outcome(result: JDResult) -> str:
+    """One word per fetch for the per-site success rate (Insights)."""
+    if result.status in ("ok", "closed"):
+        return result.status
+    reason = result.reason or ""
+    if reason.startswith(UNREADABLE) or "no job description" in reason or "no description" in reason:
+        return "unreadable"
+    if "robots.txt" in reason:
+        return "robots"
+    if "blocked the request" in reason:
+        return "blocked"
+    if "returned HTTP" in reason:
+        return "http_error"
+    return "error"

@@ -18,11 +18,13 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 from mailwarden.core import fit
 from mailwarden.core.classify.base import BackendUnavailable, LLMBackend
-from mailwarden.core.expiry import expired_reason
-from mailwarden.core.jd import JDResult, acquire, from_paste, plan
+from mailwarden.core.expiry import expired_reason, reference_time
+from mailwarden.core.jd import DEFAULT_DENY, JDResult, acquire, fetch_outcome, from_paste, plan
+from mailwarden.core.jd_fetch import PageRefused
 from mailwarden.core.models import StoredJob
 from mailwarden.core.policy import MatchingPolicy
 from mailwarden.core.prefilter import prefilter_job
@@ -53,9 +55,21 @@ class JDStats:
     reasons: dict[str, int] = field(default_factory=dict)
 
 
-def fetch_auto_jds(repo: Repository, user_id: str, policy: MatchingPolicy | None, *, get_json: GetJson, limit: int,
-                   now: dt.datetime, pause: float = 1.5, sleep: Callable[[float], None] = time.sleep,
-                   expire_after_days: int = 0) -> JDStats:
+@dataclass(frozen=True)
+class PageSources:
+    """How job pages are fetched (jd_fetch = "auto" | "button"): the polite page fetcher, public job JSON
+    endpoints (Workday, SmartRecruiters) and the do-not-fetch list."""
+
+    get_page: GetPage
+    get_json: GetJson
+    deny: tuple[str, ...] = DEFAULT_DENY
+
+
+def fetch_auto_jds(repo: Repository, user_id: str, policy: MatchingPolicy | None, *, get_json: GetJson | None,
+                   limit: int, now: dt.datetime, pause: float = 1.5, sleep: Callable[[float], None] = time.sleep,
+                   expire_after_days: int = 0, pages: PageSources | None = None) -> JDStats:
+    """Fetch JDs for current candidates, newest first: ATS APIs (``get_json``) and, with ``pages``
+    (jd_fetch = "auto"), job pages on other sites. At most ``limit`` attempts per run."""
     stats = JDStats()
     board_cache: dict[str, tuple[int, object]] = {}
 
@@ -63,30 +77,47 @@ def fetch_auto_jds(repo: Repository, user_id: str, policy: MatchingPolicy | None
         if url not in board_cache:  # Ashby returns a whole board: fetch it once per run
             if board_cache:
                 sleep(pause)
-            board_cache[url] = get_json(url)
+            board_cache[url] = get_json(url)  # type: ignore[misc]
         return board_cache[url]
 
-    for job in repo.list_jobs(user_id):
+    jobs = repo.list_jobs(user_id)
+    ref = reference_time(jobs, now)
+    for job in jobs:  # newest first
         if stats.tried >= limit:
             break
-        if job.jd_source == "paste" or job.jd_status == "closed" or _jd_fresh(job, now):
+        if job.jd_source == "paste" or job.jd_status in ("ok", "closed") or _jd_fresh(job, now):
             continue
-        if not is_candidate(job, policy) or expired_reason(job, now=now, after_days=expire_after_days):
+        if not is_candidate(job, policy) or expired_reason(job, now=ref, after_days=expire_after_days):
             continue
-        p = plan(job.link)
-        if not p.automatic:
+        p = plan(job.link, denied=pages.deny if pages else DEFAULT_DENY)
+        if p.automatic and get_json is not None:
+            fetch_json, fetch_page = cached_json, (lambda url: (0, ""))
+        elif pages is not None and p.kind in ("page", "workday", "smartrecruiters"):
+            fetch_json, fetch_page = pages.get_json, pages.get_page
+        else:
             continue
         stats.tried += 1
-        try:
-            result = acquire(p, get_json=cached_json, get_page=lambda url: (0, ""))
-        except Exception as e:  # network error, blocked, bad JSON
-            result = JDResult.unavailable(f"Couldn't reach {p.kind.title()} ({type(e).__name__}); will retry later")
-        _record(repo, user_id, job, result, stats)
+        result = _acquire(p, fetch_json, fetch_page)
+        _record(repo, user_id, job, result, stats, url=p.url, now=now)
     return stats
 
 
-def _record(repo: Repository, user_id: str, job: StoredJob, result: JDResult, stats: JDStats | None = None) -> None:
+def _acquire(p, get_json: GetJson, get_page: GetPage) -> JDResult:
+    try:
+        return acquire(p, get_json=get_json, get_page=get_page)
+    except PageRefused as e:
+        return JDResult.unavailable(f"{e}: open it in your browser and paste the JD")
+    except Exception as e:  # network error, blocked by a network guard, bad JSON
+        why = str(e) if type(e).__name__.endswith("Blocked") else type(e).__name__
+        return JDResult.unavailable(f"Couldn't fetch the page ({why[:120]}): paste the JD")
+
+
+def _record(repo: Repository, user_id: str, job: StoredJob, result: JDResult, stats: JDStats | None = None, *,
+            url: str | None = None, now: dt.datetime | None = None) -> None:
     repo.save_jd(user_id, job.id, status=result.status, reason=result.reason, source=result.source, text=result.text)
+    if url:
+        host = (urlsplit(url).hostname or "?").lower()
+        repo.record_fetch(user_id, host, fetch_outcome(result), now or dt.datetime.now(dt.UTC))
     if stats is not None:
         if result.status == "ok":
             stats.fetched += 1
@@ -94,6 +125,36 @@ def _record(repo: Repository, user_id: str, job: StoredJob, result: JDResult, st
             stats.unavailable += 1
             key = (result.reason or "unavailable").split(":")[0]
             stats.reasons[key] = stats.reasons.get(key, 0) + 1
+
+
+DAILY_KEY = "fit_scores_today"
+
+
+def scores_left_today(repo: Repository, user_id: str, per_day: int, now: dt.datetime) -> int | None:
+    """How many fit scores today's budget still allows (None: no daily cap)."""
+    if per_day <= 0:
+        return None
+    import json
+
+    today = now.astimezone().date().isoformat()
+    try:
+        state = json.loads(repo.get_state(user_id, DAILY_KEY) or "{}")
+    except ValueError:
+        state = {}
+    used = int(state.get("count", 0)) if state.get("date") == today else 0
+    return max(0, per_day - used)
+
+
+def count_scores(repo: Repository, user_id: str, n: int, now: dt.datetime) -> None:
+    import json
+
+    today = now.astimezone().date().isoformat()
+    try:
+        state = json.loads(repo.get_state(user_id, DAILY_KEY) or "{}")
+    except ValueError:
+        state = {}
+    used = int(state.get("count", 0)) if state.get("date") == today else 0
+    repo.set_state(user_id, DAILY_KEY, json.dumps({"date": today, "count": used + n}))
 
 
 @dataclass
@@ -112,14 +173,16 @@ def score_jobs(repo: Repository, user_id: str, llm: LLMBackend, profile: dict, e
     stats = ScoreStats()
     now = now or dt.datetime.now(dt.UTC)
     profile_p = fit.profile_payload(profile, effective_skills)
-    jobs = [j for j in repo.list_jobs(user_id) if only_ids is None or j.id in only_ids]
+    every = repo.list_jobs(user_id)
+    ref = reference_time(every, now)
+    jobs = [j for j in every if only_ids is None or j.id in only_ids]
     # Unscored first, then those whose inputs changed; newest first within each.
     jobs.sort(key=lambda j: (j.score is not None, -j.received_at.timestamp()))
     for job in jobs:
         if stats.scored >= limit:
             break
         if only_ids is None and (not is_candidate(job, policy)
-                                 or expired_reason(job, now=now, after_days=expire_after_days)):
+                                 or expired_reason(job, now=ref, after_days=expire_after_days)):
             continue
         job_p = fit.job_payload(job.title, job.company, job.location, job.details,
                                 job.jd_text if job.jd_status == "ok" else None)
@@ -149,19 +212,21 @@ class JobActions:
 
     def __init__(self, *, user_id: str, repo_factory: Callable[[], Repository], profile_loader: Callable[[], dict | None],
                  effective_skills: Callable[[dict], dict[str, float]], llm_factory: Callable[[], LLMBackend] | None,
-                 auto_json: GetJson | None, button_json: GetJson | None, button_page: GetPage | None) -> None:
+                 auto_json: GetJson | None, pages: PageSources | None, deny: tuple[str, ...] = DEFAULT_DENY,
+                 clock: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.UTC)) -> None:
         self._user_id = user_id
         self._repo_factory = repo_factory
         self._profile_loader = profile_loader
         self._effective = effective_skills
         self._llm_factory = llm_factory
         self._auto_json = auto_json  # None: jd_auto_fetch = false
-        self._button_json = button_json  # None: jd_button_fetch = false
-        self._button_page = button_page
+        self._pages = pages  # None: jd_fetch = "off"
+        self.deny = pages.deny if pages else deny
+        self._clock = clock
 
     @property
     def button_fetch_enabled(self) -> bool:
-        return self._button_page is not None
+        return self._pages is not None
 
     def _rescore(self, repo: Repository, job_id: int) -> str:
         profile = self._profile_loader()
@@ -183,16 +248,17 @@ class JobActions:
             job = repo.get_job(self._user_id, job_id)
             if job is None:
                 return "Job not found."
-            p = plan(job.link)
-            get_json = self._auto_json if p.automatic and self._auto_json else self._button_json
-            if p.kind != "none" and get_json is None:
-                return "Fetching is off: set [job_alerts] jd_button_fetch = true, or paste the JD."
-            try:
-                result = acquire(p, get_json=get_json or (lambda url: (0, None)),
-                                 get_page=self._button_page or (lambda url: (0, "")))
-            except Exception as e:
-                result = JDResult.unavailable(f"Couldn't fetch the job description ({type(e).__name__}): paste it instead")
-            _record(repo, self._user_id, job, result)
+            p = plan(job.link, denied=self.deny)
+            if p.automatic and self._auto_json:
+                get_json, get_page = self._auto_json, (lambda url: (0, ""))
+            elif self._pages is not None:
+                get_json, get_page = self._pages.get_json, self._pages.get_page
+            elif p.kind != "none":
+                return 'Fetching is off: set [job_alerts] jd_fetch = "button" (or "auto"), or paste the JD.'
+            else:
+                get_json, get_page = (lambda url: (0, None)), (lambda url: (0, ""))
+            result = _acquire(p, get_json, get_page)
+            _record(repo, self._user_id, job, result, url=p.url, now=self._clock())
             if result.status != "ok":
                 return result.reason or "Not available."
             return "Job description fetched. " + self._rescore(repo, job_id)
