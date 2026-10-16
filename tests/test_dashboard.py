@@ -126,7 +126,8 @@ def test_security_headers_on_every_response(env):
     c = client(env)
     for r in (c.get("/"), c.get("/static/style.css"), c.get("/nope"), c.get("/", headers={"host": "evil"})):
         csp = r.headers["content-security-policy"]
-        assert "default-src 'none'" in csp and "frame-ancestors 'none'" in csp and "script" not in csp
+        assert "default-src 'none'" in csp and "frame-ancestors 'none'" in csp
+        assert "script-src 'self'" in csp and "unsafe" not in csp and "connect-src 'none'" in csp
         assert r.headers["x-frame-options"] == "DENY" and r.headers["x-content-type-options"] == "nosniff"
         assert r.headers["cache-control"] == "no-store"
 
@@ -195,7 +196,7 @@ def test_urgent_view(env):
 
 def test_applications_view(env):
     html = client(env).get("/applications").text
-    assert "Acme" in html and "SWE" in html and "Interview" in html and "History (1)" in html
+    assert "Acme" in html and "SWE" in html and "Interview" in html and "Open in Gmail" in html
 
 
 def test_sensitive_view_counts_only(env):
@@ -239,38 +240,10 @@ def _jobs(env):
     repo.close()
 
 
-def test_jobs_page_without_profile_highlights_keywords(env):
-    env.job_keywords, env.job_locations = ["backend"], ["Bengaluru"]
-    _jobs(env)
-    html = client(env).get("/jobs?view=all").text
-    assert "Backend Engineer" in html and "Marketing Intern" in html and 'class="job match"' in html
-    assert "javascript:" not in html  # unsafe links are never rendered
-    assert 'href="https://www.linkedin.com/jobs/view/1"' in html
-    assert "Build your profile" in html
-
-
 from tests.policy_helpers import POLICY  # noqa: E402
 
 PROFILE = {"target_roles": ["backend / platform"], "avoid_roles": ["non-engineering"],
            "locations": ["Bengaluru", "Remote"], "remote_ok": True}
-
-
-def test_jobs_page_prefilter_tabs_never_hide_jobs(env):
-    env.profile_loader = lambda: PROFILE
-    env.policy_loader = lambda: POLICY
-    _jobs(env)
-    c = client(env)
-    cand = c.get("/jobs").text
-    assert "Backend Engineer" in cand and "Marketing Intern" not in cand
-    assert "Candidates (1)" in cand and "All (2)" in cand and "Filtered (1)" in cand
-    assert 'class="job match"' in cand  # target role highlighted
-    everything = c.get("/jobs?view=all").text
-    assert "Backend Engineer" in everything and "Marketing Intern" in everything
-    assert "excluded role: internship (title has &#39;Intern&#39;)" in everything and "location (Mumbai)" in everything
-    filt = c.get("/jobs?view=filtered").text
-    assert "Marketing Intern" in filt and "Backend Engineer" not in filt
-    assert c.get("/jobs?match=1").text.count("Backend Engineer") == 1  # old notification links still work
-    assert c.get("/jobs?view=bogus").status_code == 200
 
 
 def test_dismiss_job_requires_csrf(env):
@@ -385,144 +358,17 @@ class _Actions:
         return "ok"
 
 
-def test_jd_buttons_require_csrf_and_accept_long_pastes(env):
-    env.profile_loader = lambda: PROFILE
-    env.policy_loader = lambda: POLICY
-    env.job_actions = _Actions()
-    _jobs(env)
+def test_busy_database_shows_a_friendly_page_with_headers(env):
+    import sqlite3
+
+    def locked():
+        raise sqlite3.OperationalError("database is locked")
+
     c = client(env)
-    repo = env.repo_factory()
-    job_id = next(j.id for j in repo.list_jobs("local") if j.title == "Backend Engineer")
-    repo.close()
-    form = {"content-type": "application/x-www-form-urlencoded"}
-    for path in (f"/jobs/{job_id}/fetch-jd", f"/jobs/{job_id}/paste-jd", "/jobs/fetch-top"):
-        assert c.post(path, content="csrf=bad", headers=form).status_code == 403
-    long_jd = "Responsibilities " * 2000  # ~34 KB: allowed for pastes only
-    from urllib.parse import urlencode
-
-    r = c.post(f"/jobs/{job_id}/paste-jd", content=urlencode({"csrf": _csrf(env), "jd": long_jd, "view": "all"}),
-               headers=form)
-    assert r.status_code == 303 and r.headers["location"].startswith("/jobs?view=all&sort=score#job-")
-    assert c.post(f"/jobs/{job_id}/fetch-jd", content=f"csrf={_csrf(env)}", headers=form).status_code == 303
-    assert c.post(f"/jobs/{job_id}/dismiss", content=urlencode({"csrf": _csrf(env), "x": "y" * 5000}),
-                  headers=form).status_code == 403  # other forms keep the small limit
-    kinds = [c[0] for c in env.job_actions.calls]
-    assert kinds == ["paste", "fetch"]
-    html = c.get("/jobs?view=all").text
-    assert "Paste JD" in html and "Fetch JDs for top 10" in html and "LinkedIn is on the do-not-fetch list" in html
-
-
-def test_scores_show_level_and_details(env):
-    env.profile_loader = lambda: PROFILE
-    env.policy_loader = lambda: POLICY
-    _jobs(env)
-    repo = env.repo_factory()
-    job_id = next(j.id for j in repo.list_jobs("local") if j.title == "Backend Engineer")
-    repo.save_score("local", job_id, score=6.5, level="preliminary", input_hash="h",
-                    detail={"matched_skills": ["Go"], "missing_skills": ["Kafka"], "evidence": [],
-                            "best_project": "Observable Job Queue", "why": "Good Go overlap."})
-    repo.close()
-    html = client(env).get("/jobs").text
-    assert "6.5 · preliminary" in html and "Good Go overlap." in html
-    assert "Lead with: Observable Job Queue" in html and "Missing: Kafka" in html
-
-
-def test_apply_today_view(env):
-    env.profile_loader = lambda: PROFILE
-    env.policy_loader = lambda: POLICY
-    env.watchlist = ["Zeta"]
-    _jobs(env)
-    repo = env.repo_factory()
-    job_id = next(j.id for j in repo.list_jobs("local") if j.title == "Backend Engineer")
-    repo.save_score("local", job_id, score=6.0, level="preliminary", input_hash="h",
-                    detail={"matched_skills": [], "missing_skills": ["Kafka"], "evidence": [],
-                            "best_project": "Observable Job Queue", "why": "Your Go work fits."})
-    repo.close()
-    c = client(env)
-    html = c.get("/apply").text
-    # The alert doesn't say what experience it wants: it waits for a quick check, not in Apply today.
-    picks, check = html.split('id="check"')
-    assert "Backend Engineer" not in picks and "Backend Engineer" in check and "Marketing Intern" not in html
-    assert "Needs a quick check (1)" in c.get("/jobs").text
-    r = c.post(f"/jobs/{job_id}/experience", content=f"csrf={_csrf(env)}&view=apply&value=fresher",
-               headers={"content-type": "application/x-www-form-urlencoded"})
-    assert r.status_code == 303 and r.headers["location"] == "/apply"
-    html = c.get("/apply").text
-    assert 'id="check"' not in html and "you checked it: fresher OK" in html
-    assert "score 6.0 (preliminary) · fresh +0.5" in html  # received just now
-    assert "Lead with: <strong>Observable Job Queue</strong>" in html and "Paste or fetch the job description" in html
-    assert "Apply today (1)" in c.get("/jobs").text
-    r = c.post(f"/jobs/{job_id}/dismiss", content=f"csrf={_csrf(env)}&view=apply",
-               headers={"content-type": "application/x-www-form-urlencoded"})
-    assert r.status_code == 303 and r.headers["location"] == "/apply"
-    assert "Backend Engineer" not in c.get("/apply").text
-    assert "Backend Engineer" not in c.get("/jobs?view=all").text  # you dismissed it: gone from both views
-
-
-def test_experience_check_needs_csrf_and_a_known_value(env):
-    env.profile_loader = lambda: PROFILE
-    env.policy_loader = lambda: POLICY
-    _jobs(env)
-    repo = env.repo_factory()
-    job_id = next(j.id for j in repo.list_jobs("local") if j.title == "Backend Engineer")
-    repo.close()
-    c = client(env)
-    form = {"content-type": "application/x-www-form-urlencoded"}
-    assert c.post(f"/jobs/{job_id}/experience", content="value=fresher", headers=form).status_code == 403
-    c.post(f"/jobs/{job_id}/experience", content=f"csrf={_csrf(env)}&value=lol", headers=form)
-    repo = env.repo_factory()
-    assert repo.get_job("local", job_id).experience_check is None  # unknown values are ignored
-    repo.close()
-    c.post(f"/jobs/{job_id}/experience", content=f"csrf={_csrf(env)}&value=senior", headers=form)
-    html = c.get("/jobs?view=filtered").text
-    assert "Backend Engineer" in html and "too senior: you checked it: too senior" in html
-    c.post(f"/jobs/{job_id}/experience", content=f"csrf={_csrf(env)}&value=clear", headers=form)
-    assert "Needs a quick check (1)" in c.get("/jobs").text
-
-
-def test_invalid_policy_is_shown_not_hidden(env):
-    from mailwarden.core.policy import PolicyError
-
-    def broken():
-        raise PolicyError("matching.yaml is invalid: experience.pass_max_min_yrs: Extra inputs are not permitted")
-
-    env.policy_loader = broken
-    _jobs(env)
-    html = client(env).get("/jobs").text
-    assert "matching.yaml has a problem" in html and "pass_max_min_yrs" in html
-    assert "Marketing Intern" in html  # nothing filtered rather than wrongly filtered
-
-
-def test_already_applied_label(env):
-    env.profile_loader = lambda: PROFILE
-    env.policy_loader = lambda: POLICY
-    _jobs(env)
-    repo = env.repo_factory()
-    repo.upsert_application(Application(user_id="local", company="Zeta", role="Backend Engineer",
-                                        current_stage=Stage.APPLIED, last_update=NOW),
-                            event_stage=Stage.APPLIED, account="personal", message_id="a1", occurred_at=NOW, domain=None)
-    repo.close()
-    assert "Already applied" in client(env).get("/jobs?view=all").text
-
-
-def test_source_chips_and_also_on(env):
-    env.profile_loader = lambda: PROFILE
-    env.policy_loader = lambda: POLICY
-    repo = env.repo_factory()
-    for mid, src, stype, title in [("m1", "LinkedIn", "job_board", "Backend Engineer"),
-                                   ("m2", "Naukri", "job_board", "Backend Engineer"),
-                                   ("m3", "Cutshort", "startup_platform", "Platform Engineer")]:
-        post = JobPost(title=title, company="Zeta", location="Bengaluru")
-        repo.save_jobs("local", account="personal", message_id=mid, sender=src, received_at=NOW, posts=[post],
-                       keys=[dedup_key(post, src)], source_type=stype, source_name=src)
-    repo.close()
-    c = client(env)
-    html = c.get("/jobs?view=all").text
-    assert "Job boards (1)" in html and "Startup platforms (1)" in html
-    assert "LinkedIn (1)" in html and "Naukri (1)" in html and "Cutshort (1)" in html
-    assert "via LinkedIn" in html and "also on: Naukri" in html
-    only = c.get("/jobs?view=all&type=startup_platform").text
-    assert "Platform Engineer" in only and "Backend Engineer" not in only
-    naukri = c.get("/jobs?view=all&source=Naukri").text  # matches the merged job via 'also on'
-    assert "Backend Engineer" in naukri and "Platform Engineer" not in naukri
-    assert c.get("/jobs?view=all&type=bogus").status_code == 200
+    env_factory, env.repo_factory = env.repo_factory, locked
+    r = TestClient(create_app(env), base_url=BASE, follow_redirects=False)
+    r.cookies = c.cookies
+    resp = r.get("/applications")
+    assert resp.status_code == 503 and "saving new mail right now" in resp.text
+    assert resp.headers["retry-after"] == "15" and "default-src 'none'" in resp.headers["content-security-policy"]
+    env.repo_factory = env_factory

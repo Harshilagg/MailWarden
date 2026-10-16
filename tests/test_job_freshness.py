@@ -1,6 +1,7 @@
 """Stale jobs expire (never deleted), Apply today is a varied daily shortlist, stipends mark internships."""
 
 import datetime as dt
+import re
 
 import pytest
 
@@ -202,10 +203,11 @@ def test_expired_tab_keeps_stale_jobs_visible(env):  # noqa: F811
           message_id="o1", when=NOW - dt.timedelta(days=30))
     repo.close()
     c = client(env)
-    cand = c.get("/jobs").text
+    cand = c.get("/jobs/browse").text
     assert "Backend Engineer" in cand and "Platform Engineer" not in cand
-    assert "Candidates (1)" in cand and "Expired (1)" in cand and "All (2)" in cand
-    expired = c.get("/jobs?view=expired").text
+    flat = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", cand))
+    assert "Candidates 1" in flat and "Expired 1" in flat and "All 2" in flat
+    expired = c.get("/jobs/browse?status=expired").text
     assert "Platform Engineer" in expired and "not in any alert for 30 days" in expired
     assert "Backend Engineer" not in expired
-    assert "Platform Engineer" in c.get("/jobs?view=all").text  # never deleted
+    assert "Platform Engineer" in c.get("/jobs/browse?status=all").text  # never deleted

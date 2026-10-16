@@ -26,8 +26,9 @@ class AccountRegistry(ABC):
 @dataclass(frozen=True)
 class ApplicationEvent:
     stage: Stage
-    message_id: str
+    message_id: str  # an email id, or "job-<id>" for an "Applied" click on a job
     occurred_at: dt.datetime
+    account: str = ""
 
 
 class Repository(ABC):
@@ -92,6 +93,10 @@ class Repository(ABC):
     @abstractmethod
     def set_experience_check(self, user_id: str, job_id: int, value: str | None) -> bool:
         """Your quick check of a job's experience level: "fresher", "senior", or None to clear it."""
+
+    @abstractmethod
+    def mark_closed(self, user_id: str, job_id: int, closed: bool) -> bool:
+        """You marked the posting closed (False reopens it)."""
 
     @abstractmethod
     def mark_applied(self, user_id: str, job_id: int, at: dt.datetime | None) -> bool:

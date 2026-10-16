@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% import "_jobs.html" as ui with context %}
+{% block title %}Browse · Job alerts · mailwarden{% endblock %}
+{% block content %}
+{% include "_sync_banner.html" %}
+{{ ui.tabs("browse", review_n) }}
+<div class="jhead">
+  <h1>Browse</h1>
+  <p class="progress">{{ total }} job{{ "s" if total != 1 }}{% if pages > 1 %} · showing {{ first }}–{{ first + rows|length - 1 }}{% endif %}</p>
+</div>
+{{ ui.how() }}
+<div class="browse">
+  <aside class="sidebar" aria-label="Filters">
+    <details open>
+      <summary>Filters{% if f.active %} · <a href="{{ f.url(type='', source='', family='', exp='', score='', loc='', q='') }}">clear</a>{% endif %}</summary>
+      <h3>Status</h3>
+      <ul class="facet">{% for key, label in statuses %}<li><a href="{{ f.url(status=key) }}"{% if f.status == key %} aria-current="true"{% endif %}>{{ label }} <span class="count">{{ counts[key] }}</span></a></li>{% endfor %}</ul>
+      {% for facet in facets %}{% if facet.options or facet.more or (facet.name == "source" and f.q) %}
+      <h3>{{ facet.title }}</h3>
+      {% if facet.name == "source" %}
+      <form method="get" action="/jobs/browse" class="facet-search">
+        {% for k in ("status", "type", "family", "exp", "score", "loc", "sort") %}{% if f[k] %}<input type="hidden" name="{{ k }}" value="{{ f[k] }}">{% endif %}{% endfor %}
+        <input type="search" name="q" value="{{ f.q }}" placeholder="Find a source" aria-label="Find a source" data-filter="#sources">
+      </form>
+      {% endif %}
+      <ul class="facet"{% if facet.name == "source" %} id="sources"{% endif %}>
+        {% for value, label, count, selected in facet.options %}<li><a href="{{ f.url(**{facet.name: '' if selected else value}) }}"{% if selected %} aria-current="true"{% endif %}>{{ label }} <span class="count">{{ count }}</span></a></li>{% endfor %}
+        {% if facet.more %}<li><details><summary>{{ facet.more|length }} more</summary><ul class="facet">
+          {% for value, label, count, selected in facet.more %}<li><a href="{{ f.url(**{facet.name: '' if selected else value}) }}"{% if selected %} aria-current="true"{% endif %}>{{ label }} <span class="count">{{ count }}</span></a></li>{% endfor %}
+        </ul></details></li>{% endif %}
+      </ul>
+      {% endif %}{% endfor %}
+    </details>
+  </aside>
+  <section class="results">
+    <p class="filters">
+      <span class="meta">Sort:</span>
+      <a href="{{ f.url(sort='score') }}"{% if f.sort == "score" %} aria-current="page"{% endif %}>Best match</a>
+      <a href="{{ f.url(sort='newest') }}"{% if f.sort == "newest" %} aria-current="page"{% endif %}>Newest</a>
+      {% if actions and f.status in ("candidates", "all") %}
+      <form method="post" action="/jobs/fetch-top" class="inline">{{ ui.hidden("browse", back) }}<button class="secondary">Fetch JDs for top 10</button></form>
+      {% endif %}
+    </p>
+    {% if not rows %}<p class="empty">No jobs match these filters.{% if f.active %} <a href="{{ f.url(type='', source='', family='', exp='', score='', loc='', q='') }}">Clear filters</a>{% endif %}</p>{% endif %}
+    <ul class="jlist">{% for r in rows %}{{ ui.row(r, "browse", back) }}{% endfor %}</ul>
+    {% if pages > 1 %}
+    <nav class="pager" aria-label="Pages">
+      {% if f.page > 1 %}<a href="{{ f.url(page=f.page - 1) }}" rel="prev">← Previous</a>{% else %}<span></span>{% endif %}
+      <span class="meta">Page {{ f.page }} of {{ pages }}</span>
+      {% if f.page < pages %}<a href="{{ f.url(page=f.page + 1) }}" rel="next">Next →</a>{% else %}<span></span>{% endif %}
+    </nav>
+    {% endif %}
+  </section>
+</div>
+<script src="/static/jobs.js" defer></script>
+{% endblock %}

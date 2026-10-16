@@ -145,10 +145,10 @@ def apply_ready(job: StoredJob, policy: MatchingPolicy | None) -> bool:
 
 def apply_today(jobs: list[StoredJob], policy: MatchingPolicy | None, *, n: int, now: dt.datetime,
                 watchlist: list[str], applied: AppliedIndex, expire_after_days: int = 0, new_within_days: int = 0,
-                max_family_share: float = 0.0) -> list[tuple[StoredJob, RankInfo]]:
+                max_family_share: float = 0.0, min_score: float = 0.0) -> list[tuple[StoredJob, RankInfo]]:
     picks = []
     for job in _current(jobs, now=now, expire_after_days=expire_after_days, new_within_days=new_within_days):
-        if job.score is None or not apply_ready(job, policy):
+        if job.score is None or job.score < min_score or not apply_ready(job, policy):
             continue
         info = rank_job(job, now=now, watchlist=watchlist, applied=applied, policy=policy)
         if info.applied:

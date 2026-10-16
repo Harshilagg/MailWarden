@@ -135,6 +135,7 @@ def test_migration_pins_currently_urgent_rows(tmp_path, secret_store):
                                 classification=cls(category=Category.JOB, stage=Stage.INTERVIEW)))
     r._db.execute("UPDATE messages SET urgent_since = NULL")
     r._db.execute("ALTER TABLE messages DROP COLUMN urgent_since")  # simulate a v4 database
+    r._db.execute("UPDATE meta SET value = '4' WHERE key = 'schema_version'")
     r.close()
     r = SQLCipherRepository.open(path, secret_store, "local")
     assert r.get_email_meta("local", "p", "u1").urgent_since is not None

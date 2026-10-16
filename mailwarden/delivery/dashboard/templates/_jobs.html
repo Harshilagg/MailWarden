@@ -1,0 +1,99 @@
+{# Shared pieces of the Job alerts pages. Import with context (forms need csrf). #}
+
+{% macro tabs(view, review_n) %}
+<link rel="stylesheet" href="/static/jobs.css">
+<nav class="jtabs" aria-label="Job alerts views">
+  <a href="/jobs"{% if view == "today" %} aria-current="page"{% endif %}>Today</a>
+  <a href="/jobs/review"{% if view == "review" %} aria-current="page"{% endif %}>Review{% if review_n %} <span class="count">{{ review_n }}</span>{% endif %}</a>
+  <a href="/jobs/browse"{% if view == "browse" %} aria-current="page"{% endif %}>Browse</a>
+  <a href="/insights" class="jtabs-aside">Insights</a>
+</nav>
+{% if policy_error %}<p class="empty"><strong>matching.yaml has a problem, so nothing is filtered right now:</strong> {{ policy_error }}<br>Run <code>mailwarden matching check</code>.</p>{% endif %}
+{% endmacro %}
+
+{% macro how() %}
+<details class="how">
+  <summary>How ranking works</summary>
+  <ul>
+    <li><strong>Filters</strong> (matching.yaml) remove only jobs you can't or won't do: hard exclusions, too senior, location. The stack never filters. Nothing is deleted: see Browse → Filtered.</li>
+    <li><strong>Score</strong> 0–10 from your profile. <span class="badge full">7.0</span> is a <em>full</em> score from the job description; <span class="badge prelim">6.5</span> is <em>preliminary</em>, from the alert alone (at most 7).</li>
+    <li><strong>Rank</strong> = score, +0.5 if seen in the last 3 days, −1 if older than 3 weeks, +1 for watchlist companies{% if watchlist %} ({{ watchlist|join(", ") }}){% endif %}, minus soft penalties (stacks you'd rather avoid). Full scores win ties.</li>
+    <li><strong>Apply today</strong> takes the top {{ n }}{% if days %} from the last {{ days }} days of alerts{% endif %}, only with a verified experience level{% if max_stretch is not none %} (at most {{ max_stretch }} stretch){% endif %}{% if family_pct %}, and no stack family takes more than about {{ family_pct }}%{% endif %}. Applied, dismissed and expired jobs make room for new ones.</li>
+    <li><strong>Expired</strong>: not in any alert for {{ expire_days or 14 }} days, or the posting is closed.</li>
+  </ul>
+</details>
+{% endmacro %}
+
+{% macro exp_chip(r) %}
+{%- set e = r.experience -%}
+{%- if r.needs_check %}<span class="chip warn" title="{{ e.evidence if e else '' }}">Check experience</span>
+{%- elif e and e.status == "verified_fresher" %}<span class="chip ok" title="{{ e.evidence }}">Fresher</span>
+{%- elif e and e.status == "stretch" %}<span class="chip" title="{{ e.evidence }}">Stretch</span>
+{%- elif e and e.status == "too_senior" %}<span class="chip off" title="{{ e.evidence }}">Too senior</span>
+{%- endif -%}
+{% endmacro %}
+
+{% macro hidden(view, back, pos=0) %}<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="view" value="{{ view }}"><input type="hidden" name="back" value="{{ back }}"><input type="hidden" name="pos" value="{{ pos }}">{% endmacro %}
+
+{% macro action(path, label, view, back, value="", key="", primary=False, pos=0) %}
+<form method="post" action="{{ path }}" class="inline">{{ hidden(view, back, pos) }}{% if value %}<input type="hidden" name="value" value="{{ value }}">{% endif %}<button{% if not primary %} class="secondary"{% endif %}{% if key %} data-key="{{ key }}" aria-keyshortcuts="{{ key|upper }}"{% endif %}>{{ label }}</button></form>
+{% endmacro %}
+
+{% macro paste(j, view, back, pos=0) %}
+<details class="paste"><summary>Paste JD</summary>
+  <form method="post" action="/jobs/{{ j.id }}/paste-jd">{{ hidden(view, back, pos) }}
+    <textarea name="jd" rows="8" maxlength="30000" placeholder="Paste the job description here"></textarea>
+    <button class="secondary">Save and score</button>
+  </form>
+</details>
+{% endmacro %}
+
+{% macro body(r, view, back, pos=0) %}{% set j = r.job %}
+<div class="jbody">
+  {% if j.why %}<p class="summary">{{ j.why }}</p>{% endif %}
+  {% if j.best_project %}<p class="meta">Lead with: <strong>{{ j.best_project }}</strong></p>{% endif %}
+  {% if j.missing_skills %}<p class="meta">Missing: {{ j.missing_skills|join(", ") }}</p>{% endif %}
+  {% if r.experience %}<p class="meta">Experience: {{ r.experience.evidence }}</p>{% endif %}
+  {% if r.rank and r.rank.parts %}<p class="meta">Rank {{ "%.1f"|format(r.rank.rank) }} = {{ r.rank.parts|join(" · ") }}</p>{% endif %}
+  {% if r.verdict and r.verdict.excluded %}<p class="meta"><span class="chip off">Filtered</span> {{ r.verdict.reasons|join("; ") }}</p>{% endif %}
+  {% if r.expired %}<p class="meta"><span class="chip off">Expired</span> {{ r.expired }}</p>{% endif %}
+  {% if j.details %}<p class="meta">{{ j.details }}</p>{% endif %}
+  {% if j.also_on %}<p class="meta">Also on: {{ j.also_on|join(", ") }}</p>{% endif %}
+  {% if j.jd_status == "ok" %}<p class="meta">Job description: {% if j.jd_source == "paste" %}pasted{% else %}fetched ({{ j.jd_source }}){% endif %}</p>
+  {% elif j.jd_status == "closed" %}<p class="meta">Posting closed: {{ j.jd_reason }}</p>
+  {% elif j.jd_status == "unavailable" %}<p class="meta">Job description: {{ j.jd_reason }}</p>
+  {% elif r.why_not %}<p class="meta">{{ r.why_not }}</p>{% endif %}
+  {% if actions and j.jd_status not in ("ok", "closed") %}{{ paste(j, view, back, pos) }}{% endif %}
+</div>
+{% endmacro %}
+
+{% macro row(r, view, back) %}{% set j = r.job %}
+<li class="jrow{% if r.match %} match{% endif %}" id="job-{{ j.id }}">
+  <details>
+    <summary>
+      {% if j.score is not none %}<span class="badge {{ 'full' if j.score_level == 'full' else 'prelim' }}" title="{{ j.score_level }} score">{{ "%.1f"|format(j.score) }}</span>{% else %}<span class="badge none" title="not scored yet">–</span>{% endif %}
+      <span class="jtitle">{{ j.title }}</span>
+      <span class="jmeta">{{ j.company or "Company not listed" }}{% if j.location %} · {{ j.location }}{% endif %} · {{ j.source_name or j.sender }} · {{ j.received_at|ago }}</span>
+      <span class="chips">{% if r.family %}<span class="chip">{{ r.family }}</span>{% endif %}{{ exp_chip(r) }}{% if j.applied_at %}<span class="chip ok">Applied</span>{% endif %}{% if r.verdict and r.verdict.excluded %}<span class="chip off">Filtered</span>{% endif %}{% if r.expired %}<span class="chip off">Expired</span>{% endif %}</span>
+    </summary>
+    {{ body(r, view, back) }}
+  </details>
+  <div class="jacts">
+    {% if r.link %}<a class="button" href="{{ r.link }}" target="_blank" rel="noopener noreferrer">Open</a>{% endif %}
+    {% if j.applied_at %}{{ action("/jobs/%d/applied"|format(j.id), "Undo applied", view, back, value="undo") }}{% else %}{{ action("/jobs/%d/applied"|format(j.id), "Applied", view, back, primary=True) }}{% endif %}
+    <details class="menu">
+      <summary aria-label="More actions for {{ j.title }}">…</summary>
+      <div class="menu-items">
+        {% if r.can_fetch %}{{ action("/jobs/%d/fetch-jd"|format(j.id), "Fetch job description", view, back) }}{% endif %}
+        {% if j.experience_check %}{{ action("/jobs/%d/experience"|format(j.id), "Undo experience check", view, back, value="clear") }}
+        {% elif r.needs_check or (r.experience and r.experience.status == "unknown") %}
+        {{ action("/jobs/%d/experience"|format(j.id), "Fresher OK", view, back, value="fresher") }}
+        {{ action("/jobs/%d/experience"|format(j.id), "Too senior", view, back, value="senior") }}{% endif %}
+        {% if j.jd_status == "closed" and j.jd_reason == "you marked it closed" %}{{ action("/jobs/%d/closed"|format(j.id), "Reopen", view, back, value="reopen") }}
+        {% elif j.jd_status != "closed" %}{{ action("/jobs/%d/closed"|format(j.id), "Posting closed", view, back) }}{% endif %}
+        {{ action("/jobs/%d/dismiss"|format(j.id), "Dismiss", view, back) }}
+      </div>
+    </details>
+  </div>
+</li>
+{% endmacro %}

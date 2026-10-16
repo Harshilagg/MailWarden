@@ -161,3 +161,26 @@ def test_v1_database_is_migrated(tmp_path, secret_store):
     assert {"classified_by", "held_reason", "held_job", "held_company", "held_stage"} <= cols
     assert r.list_pending("local", "p", 10) == ["x"]
     r.close()
+
+
+def test_a_stuck_writer_cannot_block_pages(tmp_path, secret_store):
+    """A sync frozen mid-write (it happened during a Power Nap wake) must not block reads or opens."""
+    import time
+
+    path = tmp_path / "d" / "mw.db"
+    first = SQLCipherRepository.open(path, secret_store, "local")
+    assert first._db.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+    first.close()
+    key = secret_store.get("local/db-key")
+    stuck = SQLCipherRepository(path, key)
+    stuck._db.execute("BEGIN IMMEDIATE")  # holds the write lock, like the frozen sync
+    stuck._db.execute("INSERT INTO user_state (user_id, key, value) VALUES ('local', 'x', 'y')")
+    started = time.monotonic()
+    reader = SQLCipherRepository(path, key)  # an up-to-date database opens without writing
+    assert reader.list_applications("local") == [] and reader.get_state("local", "x") is None
+    assert time.monotonic() - started < 2  # no 5-second lock wait
+    reader.close()
+    wal = tmp_path / "d" / "mw.db-wal"  # exists while connections are open; same private mode as the database
+    assert oct(wal.stat().st_mode & 0o777) == "0o600"
+    stuck._db.execute("ROLLBACK")
+    stuck.close()

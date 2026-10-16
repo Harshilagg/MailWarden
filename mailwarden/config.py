@@ -108,6 +108,13 @@ class JobAlertSettings(_Section):
     watchlist: list[str] = []
     # How many jobs the "Apply today" view shows.
     apply_today_count: int = Field(default=8, ge=1, le=50)
+    # Weaker matches never take a slot in Apply today (they stay in Browse). 0 = no minimum. Worth setting
+    # (e.g. 5) once most jobs have full scores; title-only scores bunch up around 4.
+    apply_today_min_score: float = Field(default=0.0, ge=0, le=10)
+    # Today's tiers: Tier A (full score 7+: tailor your CV, ask for a referral) and Tier B (quick apply).
+    # The rest of Apply today is under "More".
+    tier_a_count: int = Field(default=5, ge=0, le=50)
+    tier_b_count: int = Field(default=10, ge=0, le=50)
     # "Apply today" picks only jobs first seen in the last N days, so it is a daily shortlist (0 = any age).
     apply_today_days: int = Field(default=3, ge=0, le=60)
     # At most this share of "Apply today" from one role family (Go, Java, Python, full stack/web, AI/ML ...).

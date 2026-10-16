@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% import "_jobs.html" as ui with context %}
+{% block title %}Review · Job alerts · mailwarden{% endblock %}
+{% block content %}
+{% include "_sync_banner.html" %}
+{{ ui.tabs("review", review_n) }}
+<div class="jhead">
+  <h1>Review</h1>
+  <p class="progress">{% if n %}<strong>{{ n }} left</strong> · job {{ pos + 1 }} of {{ n }}{% else %}All done{% endif %}</p>
+</div>
+<p class="meta">These pass your filters and are recent, but the alert doesn't say what experience they want, so they can't go into Today yet.
+Open the posting, check the experience line, then decide. Keys: <kbd>F</kbd> fresher OK, <kbd>S</kbd> too senior, <kbd>C</kbd> closed, <kbd>D</kbd> dismiss, <kbd>A</kbd> applied, <kbd>J</kbd>/<kbd>K</kbd> next/previous.</p>
+{% if not has_profile %}<p class="empty">Build your profile (<code>mailwarden profile build</code>) to score and rank jobs.</p>{% endif %}
+{% if card %}{% set r = card %}{% set j = r.job %}
+<article class="triage" id="review"{% if next_url %} data-next="{{ next_url }}"{% endif %}{% if prev_url %} data-prev="{{ prev_url }}"{% endif %}>
+  <header>
+    {% if j.score is not none %}<span class="badge big {{ 'full' if j.score_level == 'full' else 'prelim' }}" title="{{ j.score_level }} score">{{ "%.1f"|format(j.score) }}</span>{% endif %}
+    <div>
+      <h2>{{ j.title }}</h2>
+      <p class="jmeta">{{ j.company or "Company not listed" }}{% if j.location %} · {{ j.location }}{% endif %} · {{ j.source_name or j.sender }} · {{ j.received_at|ago }}
+        {% if r.family %}<span class="chip">{{ r.family }}</span>{% endif %}</p>
+    </div>
+    {% if r.link %}<a class="button" href="{{ r.link }}" target="_blank" rel="noopener noreferrer" data-key="o">Open posting</a>{% endif %}
+  </header>
+  {{ ui.body(r, "review", back, pos) }}
+  <div class="triage-actions">
+    {{ ui.action("/jobs/%d/experience"|format(j.id), "Fresher OK", "review", back, value="fresher", key="f", primary=True, pos=pos) }}
+    {{ ui.action("/jobs/%d/experience"|format(j.id), "Too senior", "review", back, value="senior", key="s", pos=pos) }}
+    {{ ui.action("/jobs/%d/closed"|format(j.id), "Closed", "review", back, key="c", pos=pos) }}
+    {{ ui.action("/jobs/%d/dismiss"|format(j.id), "Dismiss", "review", back, key="d", pos=pos) }}
+    {{ ui.action("/jobs/%d/applied"|format(j.id), "Applied", "review", back, key="a", pos=pos) }}
+  </div>
+  <nav class="triage-nav">
+    {% if prev_url %}<a href="{{ prev_url }}" rel="prev">← Previous</a>{% else %}<span></span>{% endif %}
+    {% if next_url %}<a href="{{ next_url }}" rel="next">Next →</a>{% endif %}
+  </nav>
+</article>
+{% else %}
+<p class="empty">Nothing to review. New jobs whose experience isn't stated show up here.</p>
+{% endif %}
+<script src="/static/jobs.js" defer></script>
+{% endblock %}

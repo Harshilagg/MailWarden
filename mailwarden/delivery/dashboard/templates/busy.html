@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}Busy · mailwarden{% endblock %}
+{% block content %}
+<meta http-equiv="refresh" content="15">
+<h1>One moment</h1>
+<p class="lead">mailwarden is saving new mail right now, so this page couldn't load. It will try again in 15 seconds, or <a href="{{ path }}">reload now</a>.</p>
+<p class="meta">If this keeps happening, run <code>mailwarden doctor</code>.</p>
+{% endblock %}

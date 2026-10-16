@@ -14,7 +14,7 @@ mailwarden is designed with two goals:
 | Malicious email content (prompt injection, crafted HTML, ReDoS) | Email text is treated as data: nonce-delimited prompts, strict output schemas, no tools, linear-time parsing |
 | Disk theft or other local users | Secrets only in the OS keyring, an SQLCipher-encrypted database with no bodies or subjects, owner-only file modes |
 | Unexpected network traffic | One host allowlist enforced in code, with TLS always verified and proxies ignored. Job-page fetching (on by default, `jd_fetch = "off"` to disable) is isolated, with SSRF guards on every hop. No telemetry |
-| Web pages and other local processes reaching the dashboard | Bound to 127.0.0.1, with a Host check, cookie auth, CSRF tokens and a strict CSP with no scripts |
+| Web pages and other local processes reaching the dashboard | Bound to 127.0.0.1, with a Host check, cookie auth, CSRF tokens and a strict CSP (one first-party script, no inline code) |
 | Too much access at Google | Exactly `gmail.readonly`. Broader grants are revoked and refused |
 
 Out of scope: malware running as your user, which can read the keyring just as
@@ -379,12 +379,19 @@ keyring backend is not a real OS keyring.
 - The cookie is set via a one-time sign-in link that expires in 10 minutes. Only the
   SHA-256 hash of the link code is stored, in the keyring.
 - Every state-changing request is a POST that must carry a CSRF token: Done, Dismiss,
-  Sign out, Fetch job description, Fetch JDs for top 10, and Paste JD. If the request
+  Sign out, Applied (and its undo), Fresher OK / Too senior, Posting closed (and Reopen),
+  Fetch job description, Fetch JDs for top 10, and Paste JD. After an action on Browse,
+  the dashboard returns only to a `/jobs/browse` address. If the request
   has an `Origin` header, it must be the dashboard's own. Request bodies are size
   limited.
-- Every response carries a Content-Security-Policy that allows no scripts at all:
-  `default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self';
-  form-action 'self'; frame-ancestors 'none'; base-uri 'none'`.
+- Every response carries this Content-Security-Policy:
+  `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self';
+  font-src 'self'; form-action 'self'; connect-src 'none'; frame-ancestors 'none';
+  base-uri 'none'`. The only script is one first-party file, `/static/jobs.js`,
+  served to the signed-in dashboard. It adds keyboard shortcuts to Review and filters
+  the source list in Browse. There are no inline scripts or event handlers, so the CSP
+  would block any injected ones, and `connect-src 'none'` stops the script making any
+  request. Every page works without it.
 - Every response also carries `X-Frame-Options: DENY`, `nosniff`,
   `Cache-Control: no-store`, `Referrer-Policy: same-origin`, and COOP/CORP headers.
 - All pages are server-rendered with auto-escaping, and no assets load from other

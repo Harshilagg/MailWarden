@@ -32,7 +32,7 @@ from mailwarden.security.fs import check_private, ensure_private_dir
 from mailwarden.security.secrets import SecretKeys, SecretStore
 from mailwarden.storage.base import ApplicationEvent, Repository
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Columns added after v1: (name, SQL type). Applied with ALTER TABLE on open.
 _MESSAGE_COLUMNS_V2 = (
@@ -208,12 +208,31 @@ class SQLCipherRepository(Repository):
         self._db.execute("PRAGMA foreign_keys = ON")
         self._db.execute("PRAGMA busy_timeout = 5000")  # dashboard and scheduled runs share the file
         self._db.execute("PRAGMA secure_delete = ON")
-        self._db.executescript(_SCHEMA)
-        self._migrate()
+        self._use_wal()
+        if self._stored_version() != SCHEMA_VERSION:  # opening an up-to-date database writes nothing
+            self._db.executescript(_SCHEMA)
+            self._migrate()
         for suffix in ("-journal", "-wal", "-shm"):
             side = Path(str(path) + suffix)
             if side.exists():
                 os.chmod(side, 0o600)
+
+    def _stored_version(self) -> int | None:
+        try:
+            row = self._db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+        except sqlcipher3.OperationalError:  # a new database: no meta table yet
+            return None
+        return int(row[0]) if row else None
+
+    def _use_wal(self) -> None:
+        """Write-ahead logging: pages can read while a sync writes, and a stuck writer can't block them.
+        Persistent once set; if another process holds the database right now, try again next time."""
+        if (self._db.execute("PRAGMA journal_mode").fetchone() or ("",))[0].lower() == "wal":
+            return
+        try:
+            self._db.execute("PRAGMA journal_mode = WAL")
+        except sqlcipher3.OperationalError:
+            pass
 
     def _migrate(self) -> None:
         existing = {r[1] for r in self._db.execute("PRAGMA table_info(messages)")}
@@ -224,7 +243,7 @@ class SQLCipherRepository(Repository):
             self._pin_currently_urgent()
         stored = self._db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
         self._migrate_jobs()
-        if stored is not None and int(stored[0]) < 9:
+        if stored is not None and int(stored[0]) < 10:
             self._tidy_jobs_v9()
         self._db.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
@@ -255,7 +274,8 @@ class SQLCipherRepository(Repository):
         """Readable requisition titles, and companies from ATS links / careers senders, for stored jobs."""
         from mailwarden.core.job_alerts import dedup_key
         from mailwarden.core.models import JobPost
-        from mailwarden.core.sources import company_from_link, company_from_source, tidy_requisition_title
+        from mailwarden.core.sources import (company_from_link, company_from_source, real_company,
+                                             split_company_prefix, tidy_requisition_title)
 
         rows = self._db.execute(
             "SELECT id, user_id, title, company, location, link, listing_details, dedup_key, source_type, "
@@ -263,7 +283,9 @@ class SQLCipherRepository(Repository):
         updates = []
         for jid, uid, title, company, location, link, details, key, stype, sname, sender in rows:
             new_title, city = tidy_requisition_title(title)
-            new_company = company or company_from_link(link) or company_from_source(stype, sname)
+            new_company = real_company(company) or company_from_link(link) or company_from_source(stype, sname)
+            if new_company is None:
+                new_company, new_title = split_company_prefix(new_title)
             new_location = location or city
             if (new_title, new_company, new_location) == (title, company, location):
                 continue
@@ -274,7 +296,7 @@ class SQLCipherRepository(Repository):
             updates.append((jid, uid, new_title, new_company, new_location, details, key, new_key))
         if not updates:
             return
-        self._backup("before-v9")
+        self._backup("before-v10")
         for jid, uid, title, company, location, details, key, new_key in updates:
             taken = self._db.execute("SELECT 1 FROM job_postings WHERE user_id = ? AND dedup_key = ? AND id != ?",
                                      (uid, new_key, jid)).fetchone()
@@ -288,6 +310,7 @@ class SQLCipherRepository(Repository):
 
         target = self._path.with_name(f"{self._path.name}.{tag}.bak")
         if not target.exists():
+            self._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")  # everything committed is in the main file
             shutil.copy2(self._path, target)
             os.chmod(target, 0o600)
 
@@ -650,6 +673,18 @@ class SQLCipherRepository(Repository):
                                (value, user_id, job_id))
         return cur.rowcount > 0
 
+    def mark_closed(self, user_id: str, job_id: int, closed: bool) -> bool:
+        """You marked the posting closed (keeps any job description). False reopens it."""
+        if closed:
+            cur = self._db.execute(
+                "UPDATE job_postings SET jd_status = 'closed', jd_reason = 'you marked it closed', "
+                "jd_fetched_at = ? WHERE user_id = ? AND id = ?", (_now(), user_id, job_id))
+        else:
+            cur = self._db.execute(
+                "UPDATE job_postings SET jd_status = CASE WHEN jd_text IS NOT NULL THEN 'ok' ELSE NULL END, "
+                "jd_reason = NULL WHERE user_id = ? AND id = ? AND jd_status = 'closed'", (user_id, job_id))
+        return cur.rowcount > 0
+
     def mark_applied(self, user_id: str, job_id: int, at: dt.datetime | None) -> bool:
         """You applied to this job (None: undo). Applied jobs leave Apply today at once."""
         cur = self._db.execute("UPDATE job_postings SET applied_at = ? WHERE user_id = ? AND id = ?",
@@ -854,12 +889,12 @@ class SQLCipherRepository(Repository):
 
     def application_history(self, user_id: str, company: str, role: str | None) -> list[ApplicationEvent]:
         rows = self._db.execute(
-            "SELECT e.stage, e.message_id, e.occurred_at FROM application_events e "
+            "SELECT e.stage, e.message_id, e.occurred_at, e.account FROM application_events e "
             "JOIN applications a ON a.id = e.application_id "
             "WHERE a.user_id = ? AND a.company_key = ? AND a.role_key = ? ORDER BY e.occurred_at",
             (user_id, company_key(company), role_key(role)),
         ).fetchall()
-        return [ApplicationEvent(Stage(r[0]), r[1], dt.datetime.fromisoformat(r[2])) for r in rows]
+        return [ApplicationEvent(Stage(r[0]), r[1], dt.datetime.fromisoformat(r[2]), r[3]) for r in rows]
 
     def application_domains(self, user_id: str) -> set[str]:
         out: set[str] = set()
@@ -901,3 +936,4 @@ class SQLCipherRepository(Repository):
             self._db.execute("ROLLBACK")
             raise
         self._db.execute("VACUUM")
+        self._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")  # no copy of the deleted rows left in the WAL file

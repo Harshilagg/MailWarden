@@ -142,6 +142,7 @@ def test_v7_migration_merges_and_backs_up(tmp_path, secret_store):
     db.execute("DROP TABLE job_sightings")
     db.execute("ALTER TABLE job_postings DROP COLUMN source_type")
     db.execute("ALTER TABLE job_postings DROP COLUMN source_name")
+    db.execute("UPDATE meta SET value = '6' WHERE key = 'schema_version'")  # a v6 database says so
     r.close()
     r = SQLCipherRepository.open(path, secret_store, "local")
     jobs = sorted(r.list_jobs("local"), key=lambda j: j.id)

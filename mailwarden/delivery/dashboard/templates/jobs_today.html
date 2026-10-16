@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% import "_jobs.html" as ui with context %}
+{% block title %}Today · Job alerts · mailwarden{% endblock %}
+{% block content %}
+{% include "_sync_banner.html" %}
+{{ ui.tabs("today", review_n) }}
+<div class="jhead">
+  <h1>Today</h1>
+  <p class="progress"><strong>Applied {{ applied_n }} of {{ day_total }}</strong> today{% if review_n %} · <a href="/jobs/review">{{ review_n }} to review</a>{% endif %}</p>
+</div>
+{{ ui.how() }}
+{% if audit_due is not none and day_total %}<p class="meta"><strong>Weekly recall audit {% if audit_due < 0 %}not run yet{% else %}due (last run {{ audit_due }} days ago){% endif %}.</strong>
+Run <code>mailwarden jobs audit</code> to check 15 jobs this list left out, and see why.</p>{% endif %}
+{% if not has_profile %}<p class="empty">Build your profile (<code>mailwarden profile build</code>) to score and rank jobs.</p>
+{% elif not (tier_a or tier_b or more) %}<p class="empty">Nothing to apply to right now.{% if review_n %} <a href="/jobs/review">Review {{ review_n }} job{{ "s" if review_n != 1 }}</a> whose experience level isn't stated: a quick check moves them here.{% endif %}</p>{% endif %}
+
+<section class="tier" aria-labelledby="tier-a">
+  <h2 id="tier-a">Tier A <span class="tier-hint">tailor your CV + ask for a referral</span> <span class="count">{{ tier_a|length }}</span></h2>
+  {% if tier_a %}<ul class="jlist">{% for r in tier_a %}{{ ui.row(r, "today", back) }}{% endfor %}</ul>{% endif %}
+  {% if fill_a %}
+  <p class="meta">Tier A needs a full score of 7+, which needs the job description. Fetch or paste it for these:</p>
+  <ul class="jlist">{% for r in fill_a %}{{ ui.row(r, "today", back) }}{% endfor %}</ul>
+  {% elif not tier_a %}<p class="meta">No job has a full score of 7+ yet.</p>{% endif %}
+</section>
+
+{% if tier_b %}
+<section class="tier" aria-labelledby="tier-b">
+  <h2 id="tier-b">Tier B <span class="tier-hint">quick apply</span> <span class="count">{{ tier_b|length }}</span></h2>
+  <ul class="jlist">{% for r in tier_b %}{{ ui.row(r, "today", back) }}{% endfor %}</ul>
+</section>
+{% endif %}
+
+{% if more %}
+<details class="tier">
+  <summary><h2>More <span class="count">{{ more|length }}</span></h2></summary>
+  <ul class="jlist">{% for r in more %}{{ ui.row(r, "today", back) }}{% endfor %}</ul>
+</details>
+{% endif %}
+
+{% if applied %}
+<details class="tier">
+  <summary><h2>Applied today <span class="count">{{ applied|length }}</span></h2></summary>
+  <ul class="jlist">{% for r in applied %}{{ ui.row(r, "today", back) }}{% endfor %}</ul>
+</details>
+{% endif %}
+<script src="/static/jobs.js" defer></script>
+{% endblock %}

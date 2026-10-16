@@ -267,3 +267,32 @@ def company_from_source(source_type: str | None, source_name: str | None) -> str
     if source_type == "ats_feed" and source_name.endswith(")") and " (" in source_name:
         return source_name.rsplit(" (", 1)[0]
     return None
+
+
+# --- "Company - Role" titles and host names posing as companies ----------------------------------
+
+# A host name, not a company: "www.x.com", "http...", or 2+ dots ("Postoffice.hirist.tech"). "Booking.com" stays.
+_HOSTLIKE = re.compile(r"^(?:https?://|www\.)\S+$|^[a-z0-9-]+\.[a-z0-9-]+\.[a-z0-9.-]+/?$", re.IGNORECASE)
+_ROLE_WORDS = re.compile(
+    r"\b(?:engineer\w*|developer|development|scientist|science|analyst|manager|intern\w*|sde|swe|lead|architect|"
+    r"consultant|specialist|designer|tester|testing|qa|data|software|backend|back-end|frontend|front-end|"
+    r"full[\s-]?stack|ai|ml|devops|sre|programmer|associate|trainee|graduate|executive|officer|head|director)\b",
+    re.IGNORECASE,
+)
+_COMPANY_PREFIX = re.compile(r"^(?P<co>[^-–|:]{2,60}?)\s+[-–|:]\s+(?P<role>.{3,})$")
+
+
+def real_company(name: str | None) -> str | None:
+    """None for a value that is really a web address ("Postoffice.hirist.tech"), else the name."""
+    if not name or _HOSTLIKE.match(name.strip()):
+        return None
+    return name
+
+
+def split_company_prefix(title: str) -> tuple[str | None, str]:
+    """'McLaren Strategic Solutions - AI/ML Engineer' -> ('McLaren Strategic Solutions', 'AI/ML Engineer').
+    Only when the first part has no role words and the rest reads like a role."""
+    m = _COMPANY_PREFIX.match(title.strip())
+    if not m or _ROLE_WORDS.search(m.group("co")) or not _ROLE_WORDS.search(m.group("role")):
+        return None, title
+    return display_company(m.group("co").strip()), m.group("role").strip()

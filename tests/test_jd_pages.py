@@ -157,11 +157,13 @@ def test_applied_button_records_an_application_and_can_be_undone(env):  # noqa: 
     assert c.post(f"/jobs/{job.id}/applied", content="view=apply", headers=form).status_code == 403  # CSRF
     assert "Backend Engineer" in c.get("/apply").text
     r = c.post(f"/jobs/{job.id}/applied", content=f"csrf={_csrf(env)}&view=apply", headers=form)
-    assert r.status_code == 303 and "Backend Engineer" not in c.get("/apply").text
+    assert r.status_code == 303
+    picks = c.get("/apply").text.split("Applied today")[0]  # gone from the tiers, listed under Applied today
+    assert "Backend Engineer" not in picks
     repo = env.repo_factory()
     assert any(a.company == "Zeta" and a.current_stage.value == "applied" for a in repo.list_applications("local"))
     repo.close()
-    assert "Applied" in c.get("/jobs?view=all").text
+    assert "Undo applied" in c.get("/jobs/browse?status=all").text
     c.post(f"/jobs/{job.id}/applied", content=f"csrf={_csrf(env)}&value=undo", headers=form)
     assert "Backend Engineer" in c.get("/apply").text
 
@@ -220,7 +222,7 @@ def test_stored_jobs_are_tidied_once_on_upgrade(tmp_path, secret_store):
     (job,) = r.list_jobs("local")
     assert (job.title, job.company, job.location) == ("Java Eclipse Development", "66degrees", "Bengaluru")
     assert "Original title: 2026_Java_Eclipse Development_BAN" in job.details
-    assert (tmp_path / "d" / "mw.db.before-v9.bak").exists()
+    assert (tmp_path / "d" / "mw.db.before-v10.bak").exists()
     # A new alert for the same job now finds the stored row instead of making a duplicate.
     again = _post("2026_Java_Eclipse Development_BAN", None, None, raw.link)
     r.save_jobs("local", account="p", message_id="m2", sender="MyGreenhouse", received_at=NOW, posts=[again],
@@ -238,3 +240,40 @@ def test_daily_score_budget_leaves_quota_for_email(repo):
     count_scores(repo, "local", 40, NOW + dt.timedelta(hours=1))
     assert scores_left_today(repo, "local", 80, NOW + dt.timedelta(hours=2)) == 0
     assert scores_left_today(repo, "local", 80, NOW + dt.timedelta(days=1)) == 80  # a new day
+
+
+@pytest.mark.parametrize("title, company, role", [
+    ("McLaren Strategic Solutions - AI/ML Engineer - GenAI (1-3 yrs)", "McLaren Strategic Solutions",
+     "AI/ML Engineer - GenAI (1-3 yrs)"),
+    ("FirstHive - Data Science Engineer (0-1 yrs)", "FirstHive", "Data Science Engineer (0-1 yrs)"),
+    ("Data Scientist - Python/SQL (1-6 yrs)", None, "Data Scientist - Python/SQL (1-6 yrs)"),
+    ("Software Engineer – Backend (Remote)", None, "Software Engineer – Backend (Remote)"),
+])
+def test_company_prefix_in_title(title, company, role):
+    from mailwarden.core.sources import split_company_prefix
+
+    assert split_company_prefix(title) == (company, role)
+
+
+def test_host_names_are_not_companies():
+    from mailwarden.core.sources import real_company
+
+    assert [real_company(x) for x in ("Postoffice.hirist.tech", "www.acme.com", "Booking.com", "Acme Inc.")] == \
+        [None, None, "Booking.com", "Acme Inc."]
+    p = _post("McLaren Strategic Solutions - AI/ML Engineer (1-3 yrs)", "Postoffice.hirist.tech", None,
+              "https://postoffice.hirist.tech/CL0/https:%2F%2Fwww.hirist.tech%2Fj%2Fx/1/a")
+    assert (p.company, p.title) == ("McLaren Strategic Solutions", "AI/ML Engineer (1-3 yrs)")
+
+
+def test_auto_stops_trying_sites_that_never_read(repo):
+    for _ in range(5):
+        repo.record_fetch("local", "www.hirist.tech", "unreadable", NOW - dt.timedelta(days=1))
+    repo.record_fetch("local", "careers.acme.com", "unreadable", NOW)
+    _save(repo, [JobPost(title="Backend Engineer", company="H", location="Bengaluru", link="https://www.hirist.tech/j/1"),
+                 JobPost(title="Platform Engineer", company="A", location="Bengaluru",
+                         link="https://careers.acme.com/j/2")])
+    f, calls, _ = _fetcher((404, ""))
+    st = fetch_auto_jds(repo, "local", ALLOW, get_json=None, limit=10, now=NOW, sleep=lambda s: None,
+                        pages=PageSources(get_page=f.get_page, get_json=lambda u: (0, None)))
+    assert st.skipped_sites == 1 and not any("hirist" in c for c in calls)
+    assert "https://careers.acme.com/j/2" in calls  # one failure isn't enough to give up

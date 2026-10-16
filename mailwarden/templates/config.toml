@@ -70,6 +70,11 @@ daily_notification = true
 watchlist = []
 # How many jobs "Apply today" shows.
 apply_today_count = 8
+# Jobs scoring below this never take a slot in Apply today (they stay in Browse). 0 = no minimum.
+apply_today_min_score = 0
+# Today's tiers: Tier A (full score 7+: tailor your CV, ask for a referral) and Tier B (quick apply).
+tier_a_count = 5
+tier_b_count = 10
 # "Apply today" picks only jobs first seen in the last N days: a daily shortlist (0 = any age).
 apply_today_days = 3
 # At most this share of "Apply today" from one role family (Go, Java, Python, full stack/web, AI/ML ...).

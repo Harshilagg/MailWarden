@@ -1,29 +1,79 @@
 {% extends "base.html" %}
 {% block title %}Applications · mailwarden{% endblock %}
+{% macro stage_pill(stage) %}<span class="pill stage-{{ stage.value }}">{{ stage|stage }}</span>{% endmacro %}
+{% macro deadline_chip(d) %}{% if d %}{% set days = (d - today).days %}<span class="chip {{ 'warn' if days <= 2 else '' }}">{% if days == 0 %}due today{% elif days == 1 %}due tomorrow{% else %}due {{ d|short_date }}{% endif %}</span>{% endif %}{% endmacro %}
+{% macro row(v) %}{% set a = v.app %}
+<li class="arow">
+  <details>
+    <summary>
+      {{ stage_pill(v.stage) }}
+      <span class="acompany">{{ a.company }}</span>{% if v.platform %} <span class="chip" title="The email came from a job board or assessment platform and didn't name the employer">platform</span>{% endif %}
+      <span class="jmeta">{{ v.role or "Role not stated" }}</span>
+      <span class="chips">
+        {{ deadline_chip(v.deadline) }}
+        {% if v.no_reply_days %}<span class="chip off" title="Still at Applied with no reply">no reply in {{ v.no_reply_days }} days</span>{% endif %}
+        <span class="when" title="Last update">{{ a.last_update|ago }}</span>
+      </span>
+    </summary>
+    <ol class="timeline">
+      {% for e in v.events|reverse %}
+      <li>
+        {{ stage_pill(e.stage) }}
+        <span class="when">{{ e.when|ago }}</span>
+        {% if e.deadline %}{{ deadline_chip(e.deadline) if e.deadline >= today else "" }}<span class="meta">deadline {{ e.deadline|short_date }}</span>{% endif %}
+        {% if e.link %}<a href="{{ e.link }}" target="_blank" rel="noopener noreferrer">{% if e.label == "email" %}Open in Gmail{% else %}Job posting{% endif %}</a>{% endif %}
+        {% if e.label != "email" %}<span class="meta">{{ e.label }}</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+  </details>
+</li>
+{% endmacro %}
 {% block content %}
 {% include "_sync_banner.html" %}
-<h1>Applications <span class="count">{{ total }}</span></h1>
-{% if not columns %}<p class="empty">No applications tracked yet. They appear as job mail is classified.</p>{% endif %}
-<div class="board">
-{% for stage, apps in columns %}
-  <section class="column">
-    <h2><span class="pill stage-{{ stage }}">{{ stage|stage }}</span> <span class="count">{{ apps|length }}</span></h2>
-    {% for a in apps %}
-    <article class="card compact">
-      <h3>{{ a.company }}</h3>
-      {% if a.role %}<p class="role">{{ a.role }}</p>{% endif %}
-      <p class="meta">Updated {{ a.last_update|ago }}</p>
-      {% set events = history[(a.company, a.role)] %}
-      {% if events %}
-      <details><summary>History ({{ events|length }})</summary>
-        <ol class="history">
-        {% for e in events %}<li><span class="pill stage-{{ e.stage }}">{{ e.stage|stage }}</span> {{ e.occurred_at|ago }}</li>{% endfor %}
-        </ol>
-      </details>
-      {% endif %}
-    </article>
-    {% endfor %}
-  </section>
-{% endfor %}
+<link rel="stylesheet" href="/static/jobs.css">
+<div class="jhead">
+  <h1>Applications</h1>
+  {% if summary.total %}
+  <p class="progress"><strong>{{ summary.total }}</strong> tracked · <strong>{{ summary.active }}</strong> in progress{% if summary.reply_rate is not none %} · heard back from {{ summary.reply_rate }}%{% endif %}{% if summary.no_reply %} · {{ summary.no_reply }} without a reply for 3+ weeks{% endif %}</p>
+  {% endif %}
 </div>
+{% if not summary.total %}<p class="empty">No applications tracked yet. They appear as job mail is classified, and when you click <strong>Applied</strong> on a job.</p>
+{% else %}
+
+{% if action %}
+<section class="tier" aria-labelledby="needs-action">
+  <h2 id="needs-action">Needs your attention <span class="count">{{ action|length }}</span></h2>
+  <div class="action-cards">
+  {% for v in action %}{% set a = v.app %}
+    <article class="card compact action-card stage-edge-{{ v.stage.value }}">
+      <p>{{ stage_pill(v.stage) }} {{ deadline_chip(v.deadline) }}</p>
+      <h3>{{ a.company }}{% if v.platform %} <span class="chip" title="The email came from a job board or assessment platform and didn't name the employer">platform</span>{% endif %}</h3>
+      {% if v.role %}<p class="role">{{ v.role }}</p>{% endif %}
+      <p class="meta">Updated {{ a.last_update|ago }}{% set last = v.events|last %}{% if last and last.link %} · <a href="{{ last.link }}" target="_blank" rel="noopener noreferrer">{% if last.label == "email" %}Open in Gmail{% else %}Job posting{% endif %}</a>{% endif %}</p>
+    </article>
+  {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<nav class="pipeline" aria-label="Filter by stage">
+  <a href="{{ f.url(stage='') }}"{% if not f.stage %} aria-current="page"{% endif %}>All <span class="count">{{ summary.total }}</span></a>
+  {% if summary.active %}<a href="{{ f.url(stage='active') }}"{% if f.stage == "active" %} aria-current="page"{% endif %}>In progress <span class="count">{{ summary.active }}</span></a>{% endif %}
+  {% for s in stages %}{% if summary.by_stage[s] %}<a href="{{ f.url(stage=s.value) }}" class="stage-{{ s.value }}"{% if f.stage == s.value %} aria-current="page"{% endif %}>{{ s|stage }} <span class="count">{{ summary.by_stage[s] }}</span></a>{% endif %}{% endfor %}
+  {% if summary.no_reply %}<a href="{{ f.url(stage='no_reply') }}"{% if f.stage == "no_reply" %} aria-current="page"{% endif %}>No reply 3+ weeks <span class="count">{{ summary.no_reply }}</span></a>{% endif %}
+</nav>
+
+<div class="list-tools">
+  <form method="get" action="/applications" class="inline">
+    {% if f.stage %}<input type="hidden" name="stage" value="{{ f.stage }}">{% endif %}{% if f.sort != "updated" %}<input type="hidden" name="sort" value="{{ f.sort }}">{% endif %}
+    <input type="search" name="q" value="{{ f.q }}" placeholder="Search company or role" aria-label="Search company or role">
+  </form>
+  <span class="meta">Sort:</span>
+  {% for key, label in sorts %}<a href="{{ f.url(sort=key) }}"{% if f.sort == key %} aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}
+</div>
+
+{% if not rows %}<p class="empty">No applications match.{% if f.stage or f.q %} <a href="/applications">Show all</a>{% endif %}</p>{% endif %}
+<ul class="alist">{% for v in rows %}{{ row(v) }}{% endfor %}</ul>
+{% endif %}
 {% endblock %}

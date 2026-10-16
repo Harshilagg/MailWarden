@@ -189,6 +189,9 @@ class App:
             watchlist=self.settings.job_alerts.watchlist,
             apply_today_count=self.settings.job_alerts.apply_today_count,
             apply_today_days=self.settings.job_alerts.apply_today_days,
+            tier_a_count=self.settings.job_alerts.tier_a_count,
+            apply_today_min_score=self.settings.job_alerts.apply_today_min_score,
+            tier_b_count=self.settings.job_alerts.tier_b_count,
             max_family_share=self.settings.job_alerts.max_family_share,
             expire_after_days=self.settings.job_alerts.expire_after_days,
         )

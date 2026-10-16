@@ -13,8 +13,9 @@ else into a digest, and shows it all on a local dashboard.
   Ollama backend keeps everything on your machine.
 - **Nothing useful on disk.** OAuth tokens and keys live only in your OS keyring. The
   database is SQLCipher-encrypted and stores no email bodies or subjects.
-- **Local only.** The dashboard listens on 127.0.0.1 and loads no external assets and
-  no JavaScript.
+- **Local only.** The dashboard listens on 127.0.0.1 and loads no external assets. Its
+  only script is one first-party file for keyboard shortcuts, and every page works
+  without it.
 
 [SECURITY.md](SECURITY.md) lists exactly what leaves your machine, to which host, and
 what is stored.
@@ -192,21 +193,25 @@ Reload (⌘R) to see new items. The background sync runs every 10 minutes.
 | --- | --- |
 | **Urgent** | Job items that need action, by deadline. Held-back job mail shows the company, the stage and a friendly reason ("Contains a verification code"), never the subject. Items are pinned: only **Done** removes them, even if they are reclassified later. Every item has an **Open in Gmail** link. |
 | **Applications** | Companies by stage (applied, assessment, interview, offer, rejection), with each application's history. |
-| **Job alerts** | Every job from your job-alert emails (see the next table). |
-| **Apply today** | A daily shortlist: the top jobs first seen in the last few days, by rank, with no single role family taking over. Jobs you dismissed, filtered out, already applied to, or that have expired are skipped. |
+| **Job alerts** | Every job from your job-alert emails, in three views (see the next table). |
 | **Digest** | The latest digest. Newsletters and job alerts are collapsed, and sensitive mail appears only as counts by sender. |
 | **Sensitive** | Counts by sender only. |
 | **Settings** | Read-only: the classifier, the allowed outbound hosts, accounts and sender tiers. |
 
-The **Job alerts** view has these controls:
+**Job alerts** has three views:
 
-| Control | What it does |
+| View | What it's for |
 | --- | --- |
-| Tabs | **Candidates** (current jobs that pass the prefilter), **All**, **Filtered** (with the reason), and **Expired** (stale or closed postings, with the reason) |
-| Sort | **Best match** or **Newest** |
-| Chips | Filter by source type and by source |
-| Each card | Fit score (*preliminary* or *full*), why, the project to lead with, missing skills, job-description status |
-| Card buttons | **Open**, **Fetch job description** (where allowed), **Paste JD**, **Dismiss** |
+| **Today** | The daily shortlist (Apply today), in tiers. **Tier A** ("tailor + referral", `tier_a_count`, default 5) needs a full score of 7+; when it's short, the jobs most worth a job description are listed under it. **Tier B** ("quick apply", `tier_b_count`, default 10), and the rest under **More**. Shows "Applied X of Y today". |
+| **Review** | Jobs whose experience level the alert doesn't state, one at a time: **Fresher OK**, **Too senior**, **Closed**, **Dismiss**, **Applied**, **Paste JD**. After each action the next job appears. Keys: F, S, C, D, A, and J / K for next / previous. |
+| **Browse** | Everything else, filtered by status (Candidates, Filtered, Expired, All) and a sidebar: source type, source (top 5, more, and search), stack family, experience, score type and location. Filters live in the URL, so a view can be bookmarked. |
+
+Job rows are one line (score badge, title, company, location, source, age, family and
+experience chips); click a row to see why it scored as it did, the project to lead
+with, missing skills, and the paste box. A solid badge is a full score, an outlined
+one is preliminary. **Open** and **Applied** are always visible; the rest is in the
+**…** menu. "How ranking works" explains the order. `/apply` and old Job alerts links
+still work.
 
 Every account you add appears on the same dashboard. Sign-in uses a one-time link
 that is valid for 10 minutes. A cookie then keeps you signed in for 90 days.
@@ -347,7 +352,9 @@ hidden.
 
 The **Insights** page (linked from Job alerts) shows, per site, how often job pages
 could be read over the last 30 days. Sites that are often "unreadable" usually build
-their pages with JavaScript.
+their pages with JavaScript. Automatic fetching skips a site after 5 tries in a week
+with none readable, so the per-run budget goes to sites that work; the button still
+tries it.
 
 ### Apply today and ranking
 
@@ -509,6 +516,8 @@ the keyring. These are the settings you're most likely to change:
 | `[digest] markdown_dir` | off | Optional plaintext Markdown copy of the digest |
 | `[job_alerts] watchlist` | `[]` | Companies whose jobs get +1 rank |
 | `[job_alerts] apply_today_count` | 8 | Jobs in Apply today |
+| `[job_alerts] apply_today_min_score` | 0 (off) | Weaker matches never take an Apply today slot (still in Browse); useful once most jobs have full scores |
+| `[job_alerts] tier_a_count` / `tier_b_count` | 5 / 10 | Today's Tier A (full score 7+) and Tier B sizes |
 | `[job_alerts] apply_today_days` | 3 | Apply today picks from jobs first seen in this many days (0 = any age) |
 | `[job_alerts] max_family_share` | 0.25 | Largest share of Apply today from one role family (0 = no cap) |
 | `[job_alerts] expire_after_days` | 14 | Days without an alert before a job expires (0 = only closed postings expire) |

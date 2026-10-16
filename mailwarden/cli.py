@@ -249,7 +249,27 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
     return 0
 
 
+RUN_TIME_LIMIT = 25 * 60
+DIGEST_TIME_LIMIT = 10 * 60
+
+
+def _time_limit(seconds: int) -> None:
+    """End this process after ``seconds`` even if it is frozen.
+
+    A scheduled run that freezes (e.g. the Mac went back to sleep in the middle of a database
+    write during a Power Nap wake) would otherwise hold the database lock for hours. SIGALRM's
+    default action ends the process at the OS level, even inside native code; SQLite rolls the
+    unfinished write back on the next open, and launchd starts a fresh run 10 minutes later.
+    """
+    import signal
+
+    if hasattr(signal, "alarm"):
+        signal.signal(signal.SIGALRM, signal.SIG_DFL)
+        signal.alarm(seconds)
+
+
 def cmd_run(args: argparse.Namespace) -> int:
+    _time_limit(RUN_TIME_LIMIT)
     app = build_app()
     accounts = app.accounts.list(app.user_id)
     if not accounts:
@@ -379,6 +399,7 @@ def cmd_open(args: argparse.Namespace) -> int:
 def cmd_digest(args: argparse.Namespace) -> int:
     from mailwarden.core.digest_job import maybe_notify_top_jobs, run_digest
 
+    _time_limit(DIGEST_TIME_LIMIT)
     app = build_app()
     repo = app.repository()
     now = dt.datetime.now(dt.UTC)
@@ -576,7 +597,9 @@ def jobs_maintenance(app: App, profile: dict, *, fetch: bool = True, score: bool
             if verbose:
                 where = "ATS APIs" + (" and job pages" if pages is not None else "")
                 print(f"job descriptions ({where}): {st.fetched} fetched, {st.unavailable} unavailable"
-                      + (f" {st.reasons}" if st.reasons else ""))
+                      + (f" {st.reasons}" if st.reasons else "")
+                      + (f"; {st.skipped_sites} skipped (sites that were never readable this week)"
+                         if st.skipped_sites else ""))
         now = dt.datetime.now(dt.UTC)
         left = scores_left_today(repo, app.user_id, ja.max_scores_per_day, now)
         if score and left == 0 and score_limit is None:
@@ -649,7 +672,7 @@ def _jobs_audit(app: App, profile: dict, *, count: int, report_only: bool) -> in
                           effective_skills=prof.effective_skills(profile), now=now, n=ja.apply_today_count,
                           watchlist=ja.watchlist, applied=AppliedIndex.from_applications(repo.list_applications(app.user_id)),
                           expire_after_days=ja.expire_after_days, window_days=ja.apply_today_days,
-                          family_share=ja.max_family_share)
+                          family_share=ja.max_family_share, min_score=ja.apply_today_min_score)
             try:
                 run_session(repo, app.user_id, ctx, count=count, ask=input, out=sys.stdout)
             except KeyboardInterrupt:

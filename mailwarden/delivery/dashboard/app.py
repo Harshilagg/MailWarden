@@ -37,11 +37,11 @@ _SLUG = re.compile(SLUG_PATTERN)
 _MSG_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 log = logging.getLogger(__name__)
 _PUBLIC_PATHS = {"/login", "/static/style.css", "/static/logo-64.png", "/static/logo-180.png", "/favicon.ico"}
-STAGE_COLUMNS = (Stage.APPLIED, Stage.ASSESSMENT, Stage.INTERVIEW, Stage.OFFER, Stage.REJECTION, Stage.OTHER)
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
-        "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; form-action 'self'; "
+        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; "
+        "form-action 'self'; connect-src 'none'; "
         "frame-ancestors 'none'; base-uri 'none'"
     ),
     "X-Content-Type-Options": "nosniff",
@@ -76,14 +76,16 @@ class DashboardDeps:
     job_actions: object | None = None
     watchlist: list[str] = field(default_factory=list)
     apply_today_count: int = 8
+    apply_today_min_score: float = 0.0
+    tier_a_count: int = 5
+    tier_b_count: int = 10
     apply_today_days: int = 0
     max_family_share: float = 0.0
     expire_after_days: int = 0
     now: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.UTC)
 
 
-_JOB_VIEWS = ("candidates", "check", "all", "filtered", "expired")
-CHECKS_SHOWN = 10  # quick-check jobs shown under Apply today (the rest are on Job alerts -> Needs a quick check)
+_BROWSE_URL = re.compile(r"^/jobs/browse(?:\?[A-Za-z0-9=&%+._\-]{0,500})?$")  # where Browse actions return
 
 
 def _stage_label(stage: Stage | str | None) -> str:
@@ -106,6 +108,7 @@ def create_app(deps: DashboardDeps) -> FastAPI:
     env.globals["csrf"] = csrf
     static = resources.files("mailwarden.delivery.dashboard").joinpath("static")
     stylesheet = static.joinpath("style.css").read_bytes()
+    job_assets = {name: static.joinpath(name).read_bytes() for name in ("jobs.css", "jobs.js")}
     logos = {name: static.joinpath(name).read_bytes() for name in ("logo-64.png", "logo-180.png")}
     # Fonts shipped with the dashboard (static/fonts). Only these exact files are served.
     font_types = {".otf": "font/otf", ".ttf": "font/ttf", ".woff": "font/woff", ".woff2": "font/woff2"}
@@ -152,7 +155,14 @@ def create_app(deps: DashboardDeps) -> FastAPI:
         elif not public and not auth.token_matches(request.cookies.get(auth.COOKIE_NAME), token):
             response = render("login.html", request, status_code=401, expired=False)
         else:
-            response = await call_next(request)
+            try:
+                response = await call_next(request)
+            except Exception as e:  # a sync is writing right now: say so instead of a bare 500
+                if "database is locked" not in str(e):
+                    raise
+                log.warning("database busy for %s", request.url.path)
+                response = render("busy.html", request, status_code=503, sync_problems=[])
+                response.headers["Retry-After"] = "15"
         for k, v in SECURITY_HEADERS.items():
             response.headers[k] = v
         return response
@@ -177,6 +187,14 @@ def create_app(deps: DashboardDeps) -> FastAPI:
     @app.get("/static/style.css")
     def style() -> Response:
         return Response(stylesheet, media_type="text/css")
+
+    @app.get("/static/jobs.css")
+    def jobs_style() -> Response:
+        return Response(job_assets["jobs.css"], media_type="text/css")
+
+    @app.get("/static/jobs.js")
+    def jobs_script() -> Response:  # the dashboard's only script: first-party, no inline code anywhere
+        return Response(job_assets["jobs.js"], media_type="text/javascript")
 
     @app.get("/static/{name}.png")
     def logo(name: str) -> Response:
@@ -232,15 +250,23 @@ def create_app(deps: DashboardDeps) -> FastAPI:
 
     @app.get("/applications")
     def applications(request: Request) -> Response:
+        from mailwarden.delivery.dashboard import app_pages
+
+        f = app_pages.Filters.parse(request.query_params)
+        addrs = addresses()
         repo = deps.repo_factory()
         try:
             apps = repo.list_applications(deps.user_id)
             history = {(a.company, a.role): repo.application_history(deps.user_id, a.company, a.role) for a in apps}
+            views = app_pages.build(
+                apps, history, email=lambda acct, mid: repo.get_email_meta(deps.user_id, acct, mid),
+                job=lambda jid: repo.get_job(deps.user_id, jid), gmail=lambda acct, mid: link(addrs, acct, mid),
+                safe_link=safe_link, now=deps.now())
         finally:
             repo.close()
-        columns = [(s, [a for a in apps if a.current_stage is s]) for s in STAGE_COLUMNS]
-        return render("applications.html", request, columns=[c for c in columns if c[1]], history=history,
-                      total=len(apps))
+        return render("applications.html", request, f=f, rows=app_pages.select(views, f),
+                      summary=app_pages.summarise(views), action=app_pages.needs_action(views)[:6],
+                      stages=app_pages.FILTER_STAGES, sorts=app_pages.SORTS, today=deps.now().astimezone().date())
 
     @app.get("/digest")
     def digest(request: Request) -> Response:
@@ -289,7 +315,7 @@ def create_app(deps: DashboardDeps) -> FastAPI:
         from mailwarden.core.prefilter import prefilter_job
         from mailwarden.profile import match_role
 
-        from mailwarden.core.ranking import AppliedIndex, rank_job
+        from mailwarden.core.ranking import AppliedIndex, rank_job, role_family
 
         repo = deps.repo_factory()
         try:
@@ -319,58 +345,87 @@ def create_app(deps: DashboardDeps) -> FastAPI:
                          "link": safe_link(j.link), "verdict": verdict, "can_fetch": can_fetch,
                          "why_not": p.why_not if p.kind == "none" else None,
                          "experience": verdict.experience if verdict else None,
+                         "family": role_family(j.title),
                          "needs_check": bool(verdict and verdict.needs_check),
                          "rank": rank_job(j, now=now, watchlist=deps.watchlist, applied=applied, policy=policy)})
         return rows, targets
 
-    @app.get("/jobs")
-    def jobs(request: Request, view: str = "candidates", sort: str = "score", match: int = 0,
-             type: str = "", source: str = "") -> Response:  # noqa: A002
-        from mailwarden.core.sources import SOURCE_TYPE_LABELS
+    def _cards(rows_by_id: dict, picks) -> list[dict]:
+        return [{**rows_by_id[job.id], "rank": info} for job, info in picks if job.id in rows_by_id]
 
-        if match:  # old links (/jobs?match=1) land on the candidates view
-            view = "candidates"
-        if view not in _JOB_VIEWS:
-            view = "candidates"
-        sort = sort if sort in ("score", "newest") else "score"
+    def _today(request: Request) -> Response:
+        from mailwarden.delivery.dashboard import job_pages
+        from mailwarden.recall import audit_due
+
+        profile, policy, policy_error = _load()
+        rows, _ = _job_rows(profile, policy)
+        by_id = {r["job"].id: r for r in rows}
+        picks, queue = _apply_picks(policy, with_checks=True)
+        t = job_pages.tiers(picks, a_count=deps.tier_a_count, b_count=deps.tier_b_count)
+        done = job_pages.applied_today([r["job"] for r in rows], deps.now())
+        repo = deps.repo_factory()
+        try:
+            due = audit_due(repo, deps.user_id, deps.now()) if profile is not None else None
+        finally:
+            repo.close()
+        max_stretch = policy.experience.max_stretch_in_apply_today if policy is not None else None
+        return render("jobs_today.html", request, view="today", back="/jobs", tier_a=_cards(by_id, t.a),
+                      tier_b=_cards(by_id, t.b), more=_cards(by_id, t.more), fill_a=_cards(by_id, t.fill_a),
+                      applied=[by_id[j.id] for j in done if j.id in by_id], applied_n=len(done),
+                      day_total=len(done) + len(picks), review_n=len(queue), has_profile=profile is not None,
+                      policy_error=policy_error, audit_due=due, a_count=deps.tier_a_count,
+                      n=deps.apply_today_count, days=deps.apply_today_days, watchlist=deps.watchlist,
+                      family_pct=round(deps.max_family_share * 100), max_stretch=max_stretch,
+                      expire_days=deps.expire_after_days, actions=deps.job_actions is not None)
+
+    @app.get("/jobs")
+    def jobs(request: Request, view: str = "", match: int = 0) -> Response:
+        if view == "check":  # old links
+            return RedirectResponse("/jobs/review", status_code=303)
+        if match or view in ("candidates", "filtered", "expired", "all"):
+            status = view if view in ("filtered", "expired", "all") else "candidates"
+            return RedirectResponse("/jobs/browse" + (f"?status={status}" if status != "candidates" else ""),
+                                    status_code=303)
+        return _today(request)
+
+    @app.get("/apply")
+    def apply_view(request: Request) -> Response:
+        return _today(request)  # notifications link here
+
+    @app.get("/jobs/review")
+    def review(request: Request, pos: int = 0) -> Response:
+        """The Needs-a-quick-check queue, one job at a time."""
+        profile, policy, policy_error = _load()
+        rows, _ = _job_rows(profile, policy)
+        by_id = {r["job"].id: r for r in rows}
+        _, queue = _apply_picks(policy, with_checks=True)
+        cards = _cards(by_id, queue)
+        n = len(cards)
+        pos = max(0, min(pos, n - 1)) if n else 0
+        return render("jobs_review.html", request, view="review", back=f"/jobs/review?pos={pos}",
+                      card=cards[pos] if n else None, pos=pos, n=n, review_n=n, policy_error=policy_error,
+                      prev_url=f"/jobs/review?pos={pos - 1}" if pos > 0 else None,
+                      next_url=f"/jobs/review?pos={pos + 1}" if pos + 1 < n else None,
+                      has_profile=profile is not None, actions=deps.job_actions is not None)
+
+    @app.get("/jobs/browse")
+    def browse_view(request: Request) -> Response:
+        from mailwarden.delivery.dashboard import job_pages
+
+        f = job_pages.Filters.parse(request.query_params)
         profile, policy, policy_error = _load()
         rows, targets = _job_rows(profile, policy)
-        expired = [r for r in rows if r["expired"]]
-        current = [r for r in rows if not r["expired"]]
-        excluded = [r for r in current if r["verdict"] and r["verdict"].excluded]
-        candidates = [r for r in current if not (r["verdict"] and r["verdict"].excluded)]
-        check = [r for r in candidates if r["needs_check"]]
-        counts = {"candidates": len(candidates), "all": len(rows), "filtered": len(excluded), "expired": len(expired),
-                  "check": len(check)}
-        rows = {"candidates": candidates, "check": check, "filtered": excluded, "expired": expired,
-                "all": rows}[view]
-        # Source chips: only sources that have produced jobs in this view, with counts.
-        type_counts: dict[str, int] = {}
-        source_counts: dict[str, int] = {}
-        for r in rows:
-            t = r["job"].source_type or "other"
-            type_counts[t] = type_counts.get(t, 0) + 1
-        if type in SOURCE_TYPE_LABELS:
-            rows = [r for r in rows if (r["job"].source_type or "other") == type]
-        else:
-            type = ""  # noqa: A001
-        for r in rows:
-            for name in {r["job"].source_name or "Unknown", *r["job"].also_on}:
-                source_counts[name] = source_counts.get(name, 0) + 1
-        if source:
-            rows = [r for r in rows if source == (r["job"].source_name or "Unknown") or source in r["job"].also_on]
-        type_chips = [(t, SOURCE_TYPE_LABELS[t], n) for t, n in sorted(type_counts.items(), key=lambda kv: -kv[1])]
-        source_chips = sorted(source_counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))
-        if sort == "score":  # by rank; full before preliminary at equal rank; unscored last
-            from mailwarden.core.ranking import sort_key
-
-            rows.sort(key=lambda r: sort_key(r["job"], r["rank"]))
-        apply_n = len(_apply_picks(policy))
-        return render("jobs.html", request, rows=rows, view=view, sort=sort, counts=counts, apply_n=apply_n,
-                      type=type, source=source, type_chips=type_chips, source_chips=source_chips,
-                      has_profile=profile is not None, targets=targets, keywords=deps.job_keywords,
-                      locations=deps.job_locations, actions=deps.job_actions is not None,
-                      expire_days=deps.expire_after_days, policy_error=policy_error)
+        shown, counts, facets = job_pages.browse(rows, f)
+        page_rows, first, pages = job_pages.page_of(shown, f)
+        _, queue = _apply_picks(policy, with_checks=True)
+        return render("jobs_browse.html", request, view="browse", back=f.url(page=f.page), f=f, rows=page_rows,
+                      total=len(shown), first=first, pages=pages, counts=counts,
+                      facets=facets, statuses=job_pages.STATUSES, review_n=len(queue),
+                      has_profile=profile is not None, policy_error=policy_error,
+                      actions=deps.job_actions is not None, expire_days=deps.expire_after_days,
+                      n=deps.apply_today_count, days=deps.apply_today_days, watchlist=deps.watchlist,
+                      family_pct=round(deps.max_family_share * 100),
+                      max_stretch=policy.experience.max_stretch_in_apply_today if policy is not None else None)
 
     def _apply_picks(policy, *, with_checks: bool = False):
         from mailwarden.core.ranking import AppliedIndex, apply_today, quick_check_queue
@@ -383,39 +438,13 @@ def create_app(deps: DashboardDeps) -> FastAPI:
             repo.close()
         picks = apply_today(jobs, policy, n=deps.apply_today_count, now=deps.now(), watchlist=deps.watchlist,
                             applied=applied, expire_after_days=deps.expire_after_days,
-                            new_within_days=deps.apply_today_days, max_family_share=deps.max_family_share)
+                            new_within_days=deps.apply_today_days, max_family_share=deps.max_family_share,
+                            min_score=deps.apply_today_min_score)
         if not with_checks:
             return picks
         checks = quick_check_queue(jobs, policy, now=deps.now(), watchlist=deps.watchlist, applied=applied,
                                    expire_after_days=deps.expire_after_days, new_within_days=deps.apply_today_days)
         return picks, checks
-
-    @app.get("/apply")
-    def apply_view(request: Request) -> Response:
-        profile, policy, policy_error = _load()
-        from mailwarden.core.prefilter import prefilter_job
-        from mailwarden.core.ranking import role_family
-        from mailwarden.recall import audit_due
-
-        repo = deps.repo_factory()
-        try:
-            due = audit_due(repo, deps.user_id, deps.now()) if profile is not None else None
-        finally:
-            repo.close()
-        chosen, queue = _apply_picks(policy, with_checks=True)
-
-        def card(j, info):
-            verdict = prefilter_job(j, policy) if policy is not None else None
-            return {"job": j, "rank": info, "link": safe_link(j.link), "family": role_family(j.title),
-                    "experience": verdict.experience if verdict else None}
-
-        picks = [card(j, info) for j, info in chosen]
-        checks = [card(j, info) for j, info in queue if info.rank is not None][:CHECKS_SHOWN]
-        max_stretch = policy.experience.max_stretch_in_apply_today if policy is not None else None
-        return render("apply.html", request, picks=picks, n=deps.apply_today_count, has_profile=profile is not None,
-                      watchlist=deps.watchlist, days=deps.apply_today_days,
-                      family_pct=round(deps.max_family_share * 100), audit_due=due, checks=checks,
-                      checks_total=len(queue), max_stretch=max_stretch, policy_error=policy_error)
 
     @app.post("/jobs/{job_id}/applied")
     async def job_applied(request: Request, job_id: int) -> Response:
@@ -464,6 +493,20 @@ def create_app(deps: DashboardDeps) -> FastAPI:
         table.sort(key=lambda r: (-r["total"], r["host"]))
         return render("insights.html", request, sites=table)
 
+    @app.post("/jobs/{job_id}/closed")
+    async def job_closed(request: Request, job_id: int) -> Response:
+        """You saw the posting is closed: it moves to Expired (undo: "Reopen")."""
+        try:
+            form = await check_post(request)
+        except PermissionError:
+            return forbidden()
+        repo = deps.repo_factory()
+        try:
+            repo.mark_closed(deps.user_id, job_id, form.get("value") != "reopen")
+        finally:
+            repo.close()
+        return _back(form, job_id)
+
     @app.post("/jobs/{job_id}/experience")
     async def experience_check(request: Request, job_id: int) -> Response:
         try:
@@ -480,14 +523,20 @@ def create_app(deps: DashboardDeps) -> FastAPI:
         return _back(form, job_id)
 
     def _back(form: dict[str, str], job_id: int | None = None) -> RedirectResponse:
-        if form.get("view") == "apply":
-            return RedirectResponse("/apply", status_code=303)
-        view = form.get("view", "candidates")
-        view = view if view in _JOB_VIEWS else "candidates"
-        sort = form.get("sort", "score")
-        sort = sort if sort in ("score", "newest") else "score"
-        anchor = f"#job-{job_id}" if job_id else ""
-        return RedirectResponse(f"/jobs?view={view}&sort={sort}{anchor}", status_code=303)
+        """Back to the view the action came from (Today, Review at the same position, or Browse with its
+        filters). Only local Job alerts URLs are accepted."""
+        view = form.get("view", "")
+        if view == "review":
+            try:
+                pos = max(0, int(form.get("pos", "0")))
+            except ValueError:
+                pos = 0
+            return RedirectResponse(f"/jobs/review?pos={pos}", status_code=303)
+        if view == "browse":
+            back = form.get("back", "")
+            target = back if _BROWSE_URL.match(back) else "/jobs/browse"
+            return RedirectResponse(target + (f"#job-{job_id}" if job_id else ""), status_code=303)
+        return RedirectResponse("/jobs" + (f"#job-{job_id}" if job_id else ""), status_code=303)
 
     @app.post("/jobs/{job_id}/fetch-jd")
     async def fetch_jd(request: Request, job_id: int) -> Response:

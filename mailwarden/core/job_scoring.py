@@ -52,6 +52,7 @@ class JDStats:
     tried: int = 0
     fetched: int = 0
     unavailable: int = 0
+    skipped_sites: int = 0
     reasons: dict[str, int] = field(default_factory=dict)
 
 
@@ -82,6 +83,7 @@ def fetch_auto_jds(repo: Repository, user_id: str, policy: MatchingPolicy | None
 
     jobs = repo.list_jobs(user_id)
     ref = reference_time(jobs, now)
+    hopeless = hopeless_hosts(repo, user_id, now)
     for job in jobs:  # newest first
         if stats.tried >= limit:
             break
@@ -93,6 +95,9 @@ def fetch_auto_jds(repo: Repository, user_id: str, policy: MatchingPolicy | None
         if p.automatic and get_json is not None:
             fetch_json, fetch_page = cached_json, (lambda url: (0, ""))
         elif pages is not None and p.kind in ("page", "workday", "smartrecruiters"):
+            if (urlsplit(p.url or "").hostname or "").lower() in hopeless:
+                stats.skipped_sites += 1  # never readable lately: don't spend the run's budget there
+                continue
             fetch_json, fetch_page = pages.get_json, pages.get_page
         else:
             continue
@@ -100,6 +105,21 @@ def fetch_auto_jds(repo: Repository, user_id: str, policy: MatchingPolicy | None
         result = _acquire(p, fetch_json, fetch_page)
         _record(repo, user_id, job, result, stats, url=p.url, now=now)
     return stats
+
+
+HOPELESS_AFTER = 5  # failed fetches in 7 days, with no success, before "auto" stops trying a site
+
+
+def hopeless_hosts(repo: Repository, user_id: str, now: dt.datetime) -> set[str]:
+    """Sites "auto" skips: 5+ fetches in the last 7 days and none readable (usually JavaScript-only pages).
+    The "Fetch job description" button still tries them; Insights shows them."""
+    tries: dict[str, int] = {}
+    good: set[str] = set()
+    for host, outcome, count in repo.fetch_stats(user_id, now - dt.timedelta(days=7)):
+        tries[host] = tries.get(host, 0) + count
+        if outcome in ("ok", "closed"):
+            good.add(host)
+    return {h for h, n in tries.items() if n >= HOPELESS_AFTER and h not in good}
 
 
 def _acquire(p, get_json: GetJson, get_page: GetPage) -> JDResult:

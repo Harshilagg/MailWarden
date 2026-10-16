@@ -59,6 +59,7 @@ class Context:
     expire_after_days: int = 0
     window_days: int = 0
     family_share: float = 0.0
+    min_score: float = 0.0
     picks: list[tuple[StoredJob, RankInfo]] = field(init=False)
     ref: dt.datetime = field(init=False)  # "now" for windows and expiry: the newest alert (see expiry)
     uncapped_ids: set[int] = field(init=False)
@@ -66,7 +67,8 @@ class Context:
     def __post_init__(self) -> None:
         self.ref = reference_time(self.jobs, self.now)
         kw = dict(n=self.n, now=self.now, watchlist=self.watchlist, applied=self.applied,
-                  expire_after_days=self.expire_after_days, new_within_days=self.window_days)
+                  expire_after_days=self.expire_after_days, new_within_days=self.window_days,
+                  min_score=self.min_score)
         self.picks = apply_today(self.jobs, self.policy, max_family_share=self.family_share, **kw)
         self.uncapped_ids = {j.id for j, _ in apply_today(self.jobs, self.policy, max_family_share=0.0, **kw)}
 
@@ -208,6 +210,10 @@ def explain(job: StoredJob, ctx: Context) -> list[Finding]:
         found.append(Finding("applied", "its company and role are already in your Applications", None, "applied"))
     if found or info.rank is None:
         return found
+    if job.score is not None and job.score < ctx.min_score:
+        return [Finding("min_score", f"score {job.score:.1f} is below the Apply today minimum of {ctx.min_score:g}",
+                        f"config: lower [job_alerts] apply_today_min_score (now {ctx.min_score:g}), or paste the job "
+                        "description for a full score", "min_score")]
     # It was eligible: only the stretch limit, the family cap or its rank kept it out.
     if is_stretch(job, ctx.policy):
         limit = ctx.policy.experience.max_stretch_in_apply_today
@@ -254,7 +260,7 @@ _KIND_LABELS = {
     "not_scored": "not scored yet", "applied": "already applied", "family_cap": "role-family limit",
     "rank": "ranked out of the top (below or tied at the cutoff)", "preliminary": "preliminary score (title only)", "cap": "score cap",
     "skill": "skill weights", "needs_check": "experience unknown (waiting for a quick check)",
-    "stretch_cap": "stretch limit",
+    "stretch_cap": "stretch limit", "min_score": "below the minimum score",
 }
 
 
